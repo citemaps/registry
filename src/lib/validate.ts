@@ -49,7 +49,7 @@ export async function validate(url: string): Promise<ValidationResult> {
       ok: false,
       format: "unknown",
       status: "blocked",
-      statusMessage: "Submission host is not publicly reachable.",
+      statusMessage: "This URL isn't publicly reachable, so we can't index it.",
     };
   }
 
@@ -73,11 +73,22 @@ export async function validate(url: string): Promise<ValidationResult> {
       clearTimeout(timeoutId);
     }
     if (!response.ok) {
+      const s = response.status;
+      let msg: string;
+      if (s === 404) {
+        msg = "No file found at this URL (404). The citemap may not be published yet, or the path might have a typo.";
+      } else if (s >= 500) {
+        msg = `The server returned an error (${s}). Try again in a moment.`;
+      } else if (s === 403 || s === 401) {
+        msg = `The URL is access-restricted (${s}). The citemap needs to be publicly readable to index.`;
+      } else {
+        msg = `The URL returned an unexpected response (${s}). Make sure the file is reachable.`;
+      }
       return {
         ok: false,
         format: "unknown",
         status: "invalid",
-        statusMessage: `Fetch returned HTTP ${response.status}.`,
+        statusMessage: msg,
       };
     }
     body = await readBodyCapped(response);
@@ -88,14 +99,14 @@ export async function validate(url: string): Promise<ValidationResult> {
         ok: false,
         format: "unknown",
         status: "timeout",
-        statusMessage: `Fetch exceeded ${FETCH_TIMEOUT_MS / 1000}s timeout.`,
+        statusMessage: `Took longer than ${FETCH_TIMEOUT_MS / 1000} seconds to respond. The server may be slow or unreachable.`,
       };
     }
     return {
       ok: false,
       format: "unknown",
       status: "invalid",
-      statusMessage: `Fetch failed: ${String(err)}`,
+      statusMessage: "Couldn't connect to this URL. Check that the domain is reachable from the public internet.",
     };
   }
 
@@ -118,12 +129,12 @@ export async function validate(url: string): Promise<ValidationResult> {
   if (format === "json") {
     try {
       citemapJson = JSON.parse(body) as Record<string, unknown>;
-    } catch (err) {
+    } catch {
       return {
         ok: false,
         format,
         status: "invalid",
-        statusMessage: `JSON parse failed: ${String(err)}`,
+        statusMessage: "File found but it's not valid JSON. The file may be corrupted or misnamed.",
       };
     }
   } else if (format === "html") {
@@ -133,7 +144,7 @@ export async function validate(url: string): Promise<ValidationResult> {
         ok: false,
         format,
         status: "invalid",
-        statusMessage: "No <script type=\"application/ld+json\"> with @type \"Citemap\" found.",
+        statusMessage: "Found a page at this URL but no citemap was embedded in it. Make sure the page contains the HTML companion you generated.",
       };
     }
   } else {
@@ -141,7 +152,7 @@ export async function validate(url: string): Promise<ValidationResult> {
       ok: false,
       format,
       status: "invalid",
-      statusMessage: "Could not detect submission format (expected JSON or HTML).",
+      statusMessage: "Couldn't detect the file format — expected JSON or HTML.",
     };
   }
 
@@ -234,11 +245,11 @@ function isCitemapShape(obj: Record<string, unknown>): boolean {
  *  null when shape is valid. */
 function validateCitemapShape(obj: Record<string, unknown>): string | null {
   if (!isCitemapShape(obj)) {
-    return "Payload @type is not \"Citemap\".";
+    return "File found but it's not a citemap — the @type field doesn't match.";
   }
   const version = obj.version ?? obj["citemapVersion"];
   if (typeof version !== "string" || !/^\d+(\.\d+)?(\.\d+)?$/.test(version)) {
-    return "Missing or malformed version field (expected semver-like string).";
+    return "The citemap is missing a valid version field.";
   }
   // At least one of brand / entity / data must be present —
   // these are the load-bearing structural sections.
@@ -246,7 +257,7 @@ function validateCitemapShape(obj: Record<string, unknown>): string | null {
   const entity = obj.entity;
   const data = obj.data;
   if (!brand && !entity && !data) {
-    return "Payload lacks any of brand / entity / data sections.";
+    return "The citemap is missing required content sections (brand, entity, or data).";
   }
   return null;
 }
