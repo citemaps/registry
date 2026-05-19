@@ -135,11 +135,48 @@ export async function bumpUrlRate(canonicalUrl: string): Promise<number> {
 
 /** Read a window of recent registry IDs — used by Phase 2
  *  index page + the dev /list endpoint. Returns newest-first. */
-export async function listRecentIds(limit = 50): Promise<string[]> {
+export async function listRecentIds(limit = 50, offset = 0): Promise<string[]> {
   const r = getRedis();
   // ZRANGE with REV gives newest-first by score
-  const ids = await r.zrange<string[]>(RECENT_KEY, 0, limit - 1, { rev: true });
+  const ids = await r.zrange<string[]>(RECENT_KEY, offset, offset + limit - 1, { rev: true });
   return ids ?? [];
+}
+
+/** Resolve the most-recently-indexed entry for a given domain.
+ *  Used by the public detail page at registry.citemaps.org/{domain}.
+ *
+ *  Walks the per-domain Set, hydrates the candidate entries,
+ *  filters to status === "indexed", and returns the newest by
+ *  lastValidatedAt. Returns null when:
+ *    - no entries exist for the domain
+ *    - none are currently indexed (all are invalid/timeout/etc)
+ *
+ *  Per-domain sets are unordered, so this fetches all entries
+ *  for the domain. v0.5 acceptable scale (1-10 entries per
+ *  domain typical; multi-citemap-per-domain case is rare). When
+ *  scale demands, switch to a per-domain sorted set keyed by
+ *  lastValidatedAt. */
+export async function getEntryByDomain(domain: string): Promise<RegistryEntry | null> {
+  if (!domain) return null;
+  const r = getRedis();
+  const ids = await r.smembers<string[]>(`${BY_DOMAIN_PREFIX}${domain}`);
+  if (!ids || ids.length === 0) return null;
+
+  const entries: RegistryEntry[] = [];
+  for (const id of ids) {
+    const entry = await getEntry(id);
+    if (entry && entry.status === "indexed") entries.push(entry);
+  }
+  if (entries.length === 0) return null;
+
+  // Newest-first by lastValidatedAt (fall back to submittedAt
+  // for entries that somehow lack a lastValidatedAt).
+  entries.sort((a, b) => {
+    const ta = Date.parse(a.lastValidatedAt ?? a.submittedAt) || 0;
+    const tb = Date.parse(b.lastValidatedAt ?? b.submittedAt) || 0;
+    return tb - ta;
+  });
+  return entries[0];
 }
 
 /** Fetch the full entries for a list of IDs. Used by the dev
