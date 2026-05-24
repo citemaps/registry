@@ -56,6 +56,13 @@ export default async function DomainDetailPage({ params }: PageProps) {
   const moduleKeys = entry.parsed?.moduleKeys ?? [];
   const version = entry.parsed?.citemapVersion;
   const completeness = entry.parsed?.profileCompleteness ?? null;
+  // Phase 4 verification state — drives the Verified badge in
+  // the header + the Claim CTA / Claimed-by card in the aside.
+  const isClaimed = !!entry.claimedByEmail;
+  const canBeClaimed = !isClaimed && !!entry.parsed?.registryToken;
+  const claimDisplay =
+    entry.claimedDisplayName ??
+    (entry.claimedByEmail ? entry.claimedByEmail.split("@")[0] : null);
 
   return (
     <>
@@ -75,6 +82,19 @@ export default async function DomainDetailPage({ params }: PageProps) {
           <h1 style={{ fontSize: 32, marginTop: 4 }}>{name}</h1>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
             <span className="badge badge-indexed">Indexed</span>
+            {isClaimed && (
+              <span style={{
+                fontSize: 11, fontFamily: "var(--font-geist-mono)",
+                background: "#0f0f0e", color: "#ffffff",
+                padding: "3px 8px", borderRadius: 4,
+                display: "inline-flex", alignItems: "center", gap: 4,
+              }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                Verified
+              </span>
+            )}
             {version && (
               <span style={{
                 fontSize: 11, fontFamily: "var(--font-geist-mono)",
@@ -158,6 +178,60 @@ export default async function DomainDetailPage({ params }: PageProps) {
               <SignalRow label="trust block" present={entry.parsed?.hasTrust ?? false} />
               <SignalRow label="temporal record" present={entry.parsed?.hasTemporalRecord ?? false} />
             </Card>
+
+            {/* Phase 4 — Verification / Claim card */}
+            {isClaimed ? (
+              <Card title="Verified by publisher">
+                {claimDisplay && (
+                  <KvRow label="Claimed by" value={claimDisplay} />
+                )}
+                {entry.claimedAt && (
+                  <KvRow label="Verified" value={formatDate(entry.claimedAt)} />
+                )}
+                <p style={{
+                  fontSize: 11, color: "var(--c-text-muted)",
+                  marginTop: 10, lineHeight: 1.55,
+                }}>
+                  The publisher proved ownership via the registry-token
+                  field in their citemap + a magic-link email confirmation.
+                </p>
+              </Card>
+            ) : canBeClaimed ? (
+              <Card title="Claim this entry">
+                <p style={{
+                  fontSize: 13, color: "var(--c-text)",
+                  margin: 0, lineHeight: 1.55,
+                }}>
+                  This citemap publishes a registry token. If you control{" "}
+                  <strong>{entry.domain}</strong>, you can claim this entry.
+                </p>
+                <Link href={`/registry/claim?id=${entry.id}`} style={{
+                  display: "inline-block",
+                  marginTop: 12,
+                  padding: "8px 14px",
+                  background: "#0f0f0e",
+                  color: "#ffffff",
+                  textDecoration: "none",
+                  fontSize: 12, fontWeight: 600,
+                  letterSpacing: "0.02em",
+                  borderBottom: "none",
+                }}>
+                  Claim →
+                </Link>
+              </Card>
+            ) : (
+              <Card title="Not yet claimable">
+                <p style={{
+                  fontSize: 12, color: "var(--c-text-muted)",
+                  margin: 0, lineHeight: 1.55,
+                }}>
+                  This citemap doesn't include a{" "}
+                  <code style={{ fontSize: 11 }}>citationContract.registryToken</code>{" "}
+                  yet. Once the publisher adds one (or regenerates from a v3.2.1-aware
+                  producer like CiteMaps Studio), this entry becomes claimable.
+                </p>
+              </Card>
+            )}
 
             <Card title="Identity">
               <KvRow label="Entry ID" value={entry.id} mono />

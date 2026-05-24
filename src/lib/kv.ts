@@ -26,8 +26,8 @@
 // ============================================================
 
 import { Redis } from "@upstash/redis";
-import { randomUUID } from "crypto";
-import type { RegistryEntry } from "./types";
+import { randomUUID, randomBytes } from "crypto";
+import type { RegistryEntry, PendingClaim } from "./types";
 
 // Lazy client — instantiated on first use so import-time
 // doesn't blow up when env vars are missing during build.
@@ -44,6 +44,10 @@ const BY_DOMAIN_PREFIX = "reg-by-domain:";
 const RECENT_KEY = "reg-recent";
 const RATE_IP_PREFIX = "rate:submit:ip:";
 const RATE_URL_PREFIX = "rate:submit:url:";
+// ── Phase 4: claim verification ────────────────────────────
+const PENDING_CLAIM_PREFIX = "claim-pending:";  // verifyToken → JSON-stringified PendingClaim
+const RATE_CLAIM_IP_PREFIX = "rate:claim:ip:";    // per-IP claim submission rate limit
+const PENDING_CLAIM_TTL_SECONDS = 24 * 60 * 60;   // 24h magic-link window
 
 /** Generate a fresh registry ID — `reg_{16-char hex}`. */
 export function newRegistryId(): string {
@@ -177,6 +181,59 @@ export async function getEntryByDomain(domain: string): Promise<RegistryEntry | 
     return tb - ta;
   });
   return entries[0];
+}
+
+// ── Phase 4: claim verification ────────────────────────────
+
+/** Generate a fresh claim verification token — `clm_{32-hex}`.
+ *  Long because it's a single-use magic-link nonce that lives
+ *  in a URL — guess-resistance matters more than human-readability. */
+export function newClaimVerifyToken(): string {
+  return `clm_${randomBytes(16).toString("hex")}`;
+}
+
+/** Save a pending claim with 24h TTL. The verifyToken is the
+ *  primary key; the magic-link URL embeds it. */
+export async function savePendingClaim(claim: PendingClaim): Promise<void> {
+  const r = getRedis();
+  await r.set(
+    `${PENDING_CLAIM_PREFIX}${claim.verifyToken}`,
+    JSON.stringify(claim),
+    { ex: PENDING_CLAIM_TTL_SECONDS },
+  );
+}
+
+/** Read a pending claim by verify token. Returns null when
+ *  the token is unknown, malformed, or expired (Redis TTL
+ *  evicts after the 24h window). */
+export async function getPendingClaim(verifyToken: string): Promise<PendingClaim | null> {
+  const raw = await getRedis().get<string | PendingClaim>(
+    `${PENDING_CLAIM_PREFIX}${verifyToken}`,
+  );
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw) as PendingClaim; } catch { return null; }
+  }
+  return raw as PendingClaim;
+}
+
+/** Delete a pending claim after successful verification. Single-
+ *  use semantics — verify URL works exactly once. */
+export async function deletePendingClaim(verifyToken: string): Promise<void> {
+  await getRedis().del(`${PENDING_CLAIM_PREFIX}${verifyToken}`);
+}
+
+/** Per-IP claim submission rate limit. Stricter than submit
+ *  (claim sends emails and is more abuse-sensitive). Returns
+ *  current count after incrementing. */
+export async function bumpClaimIpRate(ip: string): Promise<number> {
+  const key = `${RATE_CLAIM_IP_PREFIX}${ip}`;
+  const r = getRedis();
+  const count = await r.incr(key);
+  if (count === 1) {
+    await r.expire(key, 3600);
+  }
+  return count;
 }
 
 /** Fetch the full entries for a list of IDs. Used by the dev

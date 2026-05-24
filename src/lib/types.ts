@@ -65,6 +65,14 @@ export interface ParsedCitemap {
   /** SHA1 hash of the canonical body. Used by re-validation to
    *  detect "nothing changed" vs. "publisher updated, re-index". */
   rawHash?: string;
+  /** Publisher-set registry token from `citationContract.registryToken`
+   *  per v3.2.1 spec. Used by Phase 4 claim flow to prove publisher
+   *  ownership: claimant submits a token + email, we re-fetch the
+   *  citemap, and compare the submitted token against this parsed
+   *  value. Token is opaque metadata otherwise — no inference,
+   *  no AI-grounding weight. Absent for citemaps that don't declare
+   *  one (legacy / hand-authored / unaware publishers). */
+  registryToken?: string;
 }
 
 /** The full registry entry as persisted in KV. */
@@ -106,6 +114,48 @@ export interface RegistryEntry {
    *  on each successful re-check; resets on UPSERT from a new
    *  submission. */
   validationCount: number;
+  // ── Phase 4: verification + claim ──────────────────────────
+  // Set when a publisher successfully completes the claim flow
+  // (token match in citemap + magic-link verify on email). Email
+  // is the source-of-truth for ownership; accountId is recorded
+  // when the claimant was logged into Studio at claim time but
+  // is NOT used to gate access — claim survives if the publisher
+  // stops using Studio. (Phase 4 of citemaps-org-registry ADR.)
+  /** Email that successfully claimed this entry. Source of truth
+   *  for ownership. Set on successful magic-link verify. */
+  claimedByEmail?: string;
+  /** Optional Studio AccountId recorded at claim time when the
+   *  claimant was logged into Studio. Informational only — not
+   *  used to gate edit access or transfer. */
+  claimedByAccountId?: string;
+  /** ISO timestamp of successful claim. */
+  claimedAt?: string;
+  /** Display name the publisher set during claim — shown on the
+   *  registry detail page as "Claimed by X" instead of the raw
+   *  email (privacy). Optional; falls back to email's local-part
+   *  when absent. */
+  claimedDisplayName?: string;
+}
+
+/** Pending magic-link claim verification. One row per outstanding
+ *  claim attempt; consumed on successful verify. TTL'd at 24h. */
+export interface PendingClaim {
+  /** Single-use verification token (NOT the citemap's registry
+   *  token — this is the email-verify nonce). `clm_{32-hex}`. */
+  verifyToken: string;
+  /** Registry entry being claimed. */
+  registryEntryId: string;
+  /** Claimant email — destination of the magic-link email. */
+  email: string;
+  /** Optional Studio AccountId when claimant was logged into
+   *  Studio at submit time. */
+  accountId?: string;
+  /** Display name the publisher set during the claim form. */
+  displayName?: string;
+  /** ISO timestamp of submit. */
+  createdAt: string;
+  /** ISO timestamp the magic link expires (24h after createdAt). */
+  expiresAt: string;
 }
 
 /** Inbound payload for POST /api/registry/submit. */
@@ -138,6 +188,14 @@ export interface SubmissionResponse {
      *  Always returned so callers can pre-empt the eventual link
      *  surface. */
     registryUrl?: string;
+    /** Phase 4 claim signals — only present when the entry is
+     *  already claimed by a verified publisher. Studio + other
+     *  external callers use these to render a "✓ Claimed" state
+     *  instead of a "Claim this entry" CTA. Email is intentionally
+     *  *not* leaked — only the boolean + display name. */
+    claimed?: boolean;
+    claimedAt?: string;
+    claimedDisplayName?: string;
   };
 }
 

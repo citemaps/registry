@@ -302,6 +302,16 @@ function extractMetadata(obj: Record<string, unknown>): ParsedCitemap {
   out.hasTrust = isObject(obj.trust) || isObject(brand?.trust);
   out.hasTemporalRecord = isObject(obj.temporalRecord) || isObject(brand?.temporalRecord);
 
+  // Registry token (v3.2.1 spec) — extract for Phase 4 claim
+  // flow. Per spec, the field is opaque metadata to validators
+  // (no inference, no scoring); we extract it solely so the
+  // claim API can compare against submissions without re-parsing.
+  // Absent for publishers who haven't adopted the v3.2.1 field.
+  const citationContract = obj.citationContract as Record<string, unknown> | undefined;
+  if (citationContract && typeof citationContract.registryToken === "string") {
+    out.registryToken = citationContract.registryToken;
+  }
+
   // Profile completeness — light heuristic; refine in Phase 2.
   // Counts presence of high-value fields out of a fixed
   // weighted denominator.

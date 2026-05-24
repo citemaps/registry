@@ -51,6 +51,18 @@ export async function GET(
       lastValidatedAt: entry.lastValidatedAt,
       parsed: entry.parsed,
       registryUrl: `https://citemaps.org/registry/${entry.domain}`,
+      // Phase 4 claim signals — externally-visible state only.
+      // Email is intentionally withheld so this endpoint stays
+      // safe to expose anywhere (CORS / Studio polling / public
+      // status badge later). `claimedDisplayName` is fine to leak
+      // since the claimant opted into it being public.
+      ...(entry.claimedByEmail
+        ? {
+            claimed: true,
+            claimedAt: entry.claimedAt,
+            claimedDisplayName: entry.claimedDisplayName,
+          }
+        : {}),
     },
   };
   return NextResponse.json(payload, { status: 200 });

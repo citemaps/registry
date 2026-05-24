@@ -225,6 +225,19 @@ function EntryCard({ entry }: { entry: RegistryEntry }) {
           {completeness !== null && (
             <CompletenessRing value={completeness} />
           )}
+          {entry.claimedByEmail && (
+            <span style={{
+              fontSize: 11, fontFamily: "var(--font-geist-mono)",
+              background: "#0f0f0e", color: "#ffffff",
+              padding: "3px 8px", borderRadius: 4,
+              display: "inline-flex", alignItems: "center", gap: 4,
+            }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              Verified
+            </span>
+          )}
           <span className="badge badge-indexed">Indexed</span>
         </div>
       </div>
