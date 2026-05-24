@@ -17,7 +17,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -37,6 +37,29 @@ type SendState =
   | { kind: "error"; message: string; code?: string };
 
 export default function ClaimPage() {
+  // useSearchParams() forces dynamic rendering — in Next.js 16
+  // App Router this requires the consuming component to live
+  // inside a <Suspense> boundary, otherwise the build's static-
+  // prerender pass blows up. Wrap the actual form in a Suspense
+  // boundary so the prerender succeeds with the fallback shell
+  // and the real form hydrates on the client.
+  return (
+    <Suspense fallback={<ClaimPageFallback />}>
+      <ClaimForm />
+    </Suspense>
+  );
+}
+
+function ClaimPageFallback() {
+  return (
+    <main className="container" style={{ paddingTop: 56, paddingBottom: 80, maxWidth: 560 }}>
+      <h1 style={{ fontSize: 28, marginBottom: 16 }}>Claim registry entry</h1>
+      <p style={{ fontSize: 14, color: "var(--c-text-muted)" }}>Loading…</p>
+    </main>
+  );
+}
+
+function ClaimForm() {
   const params = useSearchParams();
   const entryId = params?.get("id") ?? null;
 
