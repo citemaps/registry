@@ -289,18 +289,49 @@ function extractMetadata(obj: Record<string, unknown>): ParsedCitemap {
     }
   }
 
-  // Module keys — top-level fields after the well-known
-  // metadata fields. Heuristic, not exhaustive.
+  // Module keys — top-level fields that aren't metadata,
+  // identity, or v3.3 foundational sections. After this
+  // filter, what's left is actual vertical-specific module
+  // blocks (localBusiness, ecommerce, software, restaurant,
+  // legal, finance, medicalBusiness, etc.) — the
+  // user-pickable content the citemap actually describes.
+  //
+  // Excludes:
+  //  - Metadata: @context/@type/@graph/version/citemapVersion/
+  //    $schema/generatedBy/lastVerified/lastUpdated/citemapLevel/
+  //    citemap (the citemap-meta block)
+  //  - Identity: brand/entity/contact/verticals/relationships
+  //  - v3.3 foundational sections: citationContract/temporalRecord/
+  //    trust/answerContent/policy/verification (always-on per
+  //    v3.3 §3 — not "modules" the user picked)
+  //  - v3.0 verifiedClaims (content-ish but emitted as a
+  //    structural array, not a vertical module)
+  //
+  // Per v3.3 §1.4 — when `relationships` is present it's a
+  // graph-extension block, not a module. Filtered.
   const METADATA_KEYS = new Set([
+    // metadata
     "@context", "@type", "@graph", "version", "citemapVersion",
-    "brand", "entity", "verticals", "citationContract", "lastUpdated",
+    "$schema", "generatedBy", "lastVerified", "lastUpdated",
+    "citemapLevel", "citemap",
+    // identity + structural
+    "brand", "entity", "contact", "verticals", "relationships",
+    // v3.3 foundational sections (always-on per spec §3)
+    "citationContract", "temporalRecord", "trust", "answerContent",
+    "policy", "verification",
+    // v3.0 structural arrays
+    "verifiedClaims",
   ]);
   const moduleKeys = Object.keys(obj).filter(k => !METADATA_KEYS.has(k));
   if (moduleKeys.length > 0) out.moduleKeys = moduleKeys;
 
-  // Presence flags for badges
+  // Presence flags for badges. Mirror the v3.3 foundational
+  // sections so the detail page can surface their presence
+  // independently from the modules list.
   out.hasTrust = isObject(obj.trust) || isObject(brand?.trust);
   out.hasTemporalRecord = isObject(obj.temporalRecord) || isObject(brand?.temporalRecord);
+  out.hasPolicy = isObject(obj.policy) && Object.keys(obj.policy as object).length > 0;
+  out.hasVerification = isObject(obj.verification) && Object.keys(obj.verification as object).length > 0;
 
   // Registry token (v3.2.1 spec) — extract for Phase 4 claim
   // flow. Per spec, the field is opaque metadata to validators

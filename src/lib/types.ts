@@ -59,6 +59,15 @@ export interface ParsedCitemap {
   hasTrust?: boolean;
   /** Convenience: did it include a temporalRecord? */
   hasTemporalRecord?: boolean;
+  /** v3.3 §3.2: did the payload include a non-empty `policy`
+   *  foundational section? Empty {} (the always-on default)
+   *  reads as false here — only meaningful when the publisher
+   *  has actually set at least one sub-policy URL. */
+  hasPolicy?: boolean;
+  /** v3.3 §3.2: did the payload include a non-empty
+   *  `verification` foundational section (graduated from
+   *  optional module to foundational in v3.3)? */
+  hasVerification?: boolean;
   /** Profile-completeness score 0-100. Heuristic computed at
    *  validation time. */
   profileCompleteness?: number;
