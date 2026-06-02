@@ -101,7 +101,12 @@ export async function GET(
 
 function buildRedirectBase(req: NextRequest): string {
   const forwardedHost = req.headers.get("x-forwarded-host");
-  const host = forwardedHost || req.headers.get("host") || "citemaps.org";
+  // Fallback is api.citemaps.org — the registry's Vercel
+  // deployment, which is the only host that serves the
+  // /registry/claim/result page. citemaps.org root is the
+  // Astro spec site (GitHub Pages) and would 404 the result
+  // page.
+  const host = forwardedHost || req.headers.get("host") || "api.citemaps.org";
   const protocol = req.headers.get("x-forwarded-proto") || (host.startsWith("localhost") ? "http" : "https");
   return `${protocol}://${host}`;
 }

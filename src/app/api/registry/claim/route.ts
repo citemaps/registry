@@ -205,5 +205,11 @@ function buildVerifyUrl(req: NextRequest, verifyToken: string): string {
   // Pages) which can't serve dynamic /registry/* routes.
   const host = forwardedHost || req.headers.get("host") || "api.citemaps.org";
   const protocol = req.headers.get("x-forwarded-proto") || (host.startsWith("localhost") ? "http" : "https");
-  return `${protocol}://${host}/registry/claim/verify/${verifyToken}`;
+  // Path is /api/registry/claim/verify/{token} — the GET API
+  // endpoint that does the verification work + redirects to
+  // /registry/claim/result on success or failure. The
+  // /registry/claim/verify/{token} page path does NOT exist
+  // (caught in dogfood 2026-06-02 when the email link landed
+  // on a 404 instead of finalizing the claim).
+  return `${protocol}://${host}/api/registry/claim/verify/${verifyToken}`;
 }
