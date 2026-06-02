@@ -200,7 +200,10 @@ export async function POST(req: NextRequest) {
  *  a hard-coded production URL. */
 function buildVerifyUrl(req: NextRequest, verifyToken: string): string {
   const forwardedHost = req.headers.get("x-forwarded-host");
-  const host = forwardedHost || req.headers.get("host") || "citemaps.org";
+  // Default fallback is api.citemaps.org — the registry's Vercel
+  // deployment. citemaps.org root is the Astro spec site (GitHub
+  // Pages) which can't serve dynamic /registry/* routes.
+  const host = forwardedHost || req.headers.get("host") || "api.citemaps.org";
   const protocol = req.headers.get("x-forwarded-proto") || (host.startsWith("localhost") ? "http" : "https");
   return `${protocol}://${host}/registry/claim/verify/${verifyToken}`;
 }

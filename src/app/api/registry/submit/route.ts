@@ -210,11 +210,13 @@ function ok(entry: RegistryEntry): NextResponse {
       submittedAt: entry.submittedAt,
       lastValidatedAt: entry.lastValidatedAt,
       parsed: entry.parsed,
-      // Phase 2 public URL — emitted now so callers can pre-empt
-      // the link surface. Until Phase 2 ships the route, this
-      // 404s; safe to surface anyway as the canonical permanent
-      // address.
-      registryUrl: `https://citemaps.org/registry/${entry.domain}`,
+      // Public detail-page URL. The Next.js registry app is
+      // deployed at api.citemaps.org (Vercel); citemaps.org root
+      // is the Astro spec site (GitHub Pages) which doesn't
+      // serve dynamic routes. Detail pages live at
+      // /[domain] (Next.js dynamic route at app/[domain]/page.tsx),
+      // NOT under /registry/.
+      registryUrl: `https://api.citemaps.org/${entry.domain}`,
     },
   };
   return NextResponse.json(payload, { status: 200 });

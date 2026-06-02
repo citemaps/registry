@@ -68,7 +68,10 @@ export async function sendClaimVerify({
   expiresAt,
 }: {
   email: string;
-  /** Full URL: https://citemaps.org/registry/claim/verify/{clm_*}. */
+  /** Full URL: https://api.citemaps.org/registry/claim/verify/{clm_*}.
+   *  Constructed in route.ts:buildVerifyUrl from the inbound
+   *  request's host header so it matches the deployment URL
+   *  (api.citemaps.org in prod, localhost in dev). */
   verifyUrl: string;
   /** Domain being claimed — shown for at-a-glance recognition. */
   domain: string;

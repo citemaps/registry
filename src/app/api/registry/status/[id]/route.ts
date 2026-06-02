@@ -50,7 +50,12 @@ export async function GET(
       submittedAt: entry.submittedAt,
       lastValidatedAt: entry.lastValidatedAt,
       parsed: entry.parsed,
-      registryUrl: `https://citemaps.org/registry/${entry.domain}`,
+      // Public detail-page URL at api.citemaps.org/{domain}.
+      // citemaps.org root is the Astro spec site (GitHub Pages)
+      // which can't serve dynamic routes — the detail pages are
+      // Next.js dynamic routes at app/[domain]/page.tsx on the
+      // registry app's Vercel deployment.
+      registryUrl: `https://api.citemaps.org/${entry.domain}`,
       // Phase 4 claim signals — externally-visible state only.
       // Email is intentionally withheld so this endpoint stays
       // safe to expose anywhere (CORS / Studio polling / public

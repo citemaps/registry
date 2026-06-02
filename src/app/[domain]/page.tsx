@@ -40,7 +40,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     openGraph: {
       title: `${name} · citemaps.org registry`,
       description: `Citemap.json indexed at citemaps.org.`,
-      url: `https://registry.citemaps.org/${domain}`,
+      url: `https://api.citemaps.org/${domain}`,
       type: "article",
     },
   };

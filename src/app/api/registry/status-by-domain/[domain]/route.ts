@@ -57,7 +57,10 @@ export async function GET(
       submittedAt: entry.submittedAt,
       lastValidatedAt: entry.lastValidatedAt,
       parsed: entry.parsed,
-      registryUrl: `https://citemaps.org/registry/${entry.domain}`,
+      // Public detail-page URL at api.citemaps.org/{domain}
+      // (Next.js dynamic route on the registry's Vercel app).
+      // citemaps.org root is the Astro spec site (GitHub Pages).
+      registryUrl: `https://api.citemaps.org/${entry.domain}`,
       ...(entry.claimedByEmail
         ? {
             claimed: true,

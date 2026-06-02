@@ -85,7 +85,10 @@ export interface RegistryEntry {
   url: string;
   /** Bare host extracted from url, lowercased + www-stripped.
    *  Drives per-domain rate limiting + display URL structure
-   *  (`citemaps.org/registry/{domain}` in Phase 2). */
+   *  (`api.citemaps.org/{domain}` — the registry's Vercel app
+   *  serves the detail page at /[domain]; citemaps.org root is
+   *  the Astro spec site on GitHub Pages and can't serve
+   *  dynamic routes). */
   domain: string;
   /** Detected format from the validation fetch. */
   format: SubmissionFormat;
