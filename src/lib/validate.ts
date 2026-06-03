@@ -259,6 +259,127 @@ function validateCitemapShape(obj: Record<string, unknown>): string | null {
   if (!brand && !entity && !data) {
     return "The citemap is missing required content sections (brand, entity, or data).";
   }
+  // v3.3 §1.3 orphan rejection — every @graph node must be
+  // reachable from the primary entity via relationships[]
+  // (directly or transitively). Pure structural pass, no
+  // network calls. Skipped for documents that don't use the
+  // @graph extension.
+  const graphError = validateGraphReachability(obj);
+  if (graphError) return graphError;
+
+  return null;
+}
+
+/** v3.3 §1.3 orphan-node rejection.
+ *
+ *  Every node in `@graph[]` MUST be reachable from the primary
+ *  entity via at least one edge in `relationships[]`, directly
+ *  or transitively. Edges are treated as undirected for
+ *  reachability purposes — direction expresses semantic role
+ *  (parentOrganizationOf vs subOrganizationOf), not graph
+ *  connectivity. A `Person` node connected to the primary by
+ *  a `worksFor` edge in EITHER direction satisfies the rule.
+ *
+ *  Returns null when the document is well-formed (or when no
+ *  @graph extension is present — the rule only fires for
+ *  documents that opt in). Returns a descriptive error when
+ *  orphans are found, when @graph nodes lack @id, or when the
+ *  primary entity can't be identified despite @graph being
+ *  populated.
+ *
+ *  Cross-document @id references (absolute URLs in `to` that
+ *  aren't local @graph node IDs) participate in the adjacency
+ *  set — they're valid edge endpoints per §1.4 — but they
+ *  don't need to be "reachable" since they're external. The
+ *  check only inspects whether THIS document's @graph nodes
+ *  are reachable; external edges that pass through them on
+ *  the way to remote @ids still count for connectivity.
+ *
+ *  Algorithm: O(V + E) BFS. Typical citemap sizes (~10-50
+ *  graph nodes, ~20-100 edges) — trivially fast.
+ */
+function validateGraphReachability(obj: Record<string, unknown>): string | null {
+  const graph = obj["@graph"];
+  if (!Array.isArray(graph) || graph.length === 0) return null;
+
+  // Identify the primary entity's @id. Per v3.3 §1, this lives
+  // at brand["@id"]; entity["@id"] handled as a legacy fallback
+  // for documents using the older brand-less shape.
+  const brand = obj.brand as Record<string, unknown> | undefined;
+  const entity = obj.entity as Record<string, unknown> | undefined;
+  const primary = brand ?? entity;
+  const primaryId = primary && typeof primary["@id"] === "string"
+    ? (primary["@id"] as string)
+    : null;
+  if (!primaryId) {
+    return "The citemap uses the v3.3 @graph extension but the primary entity is missing an @id. Per spec §1.3, every @graph node must be reachable from the primary entity, which requires the primary entity to be identifiable by @id.";
+  }
+
+  // Collect every @graph node's @id; flag any node missing one.
+  // Per §1.3, nodes MUST have at minimum @type and @id.
+  const graphNodeIds: string[] = [];
+  const missingIdAt: number[] = [];
+  graph.forEach((node, i) => {
+    if (node && typeof node === "object" && !Array.isArray(node)) {
+      const id = (node as Record<string, unknown>)["@id"];
+      if (typeof id === "string") graphNodeIds.push(id);
+      else missingIdAt.push(i);
+    } else {
+      missingIdAt.push(i);
+    }
+  });
+  if (missingIdAt.length > 0) {
+    const sample = missingIdAt.slice(0, 5).join(", ");
+    const more = missingIdAt.length > 5 ? ", …" : "";
+    return `The citemap's @graph[] contains ${missingIdAt.length} node${missingIdAt.length === 1 ? "" : "s"} without an @id (at index${missingIdAt.length === 1 ? "" : "es"} ${sample}${more}). Per spec §1.3, every @graph node must have at minimum @type and @id.`;
+  }
+
+  // Build undirected adjacency from relationships[]. Edges
+  // with missing or non-string endpoints are skipped — they
+  // can't participate in reachability anyway. Validators
+  // SHOULD ignore unknown edge fields per §1.4; we follow the
+  // same posture for malformed edges (don't fail-fast on edge
+  // shape; let the orphan check speak instead).
+  const rels = Array.isArray(obj.relationships) ? obj.relationships : [];
+  const adjacency = new Map<string, Set<string>>();
+  const addEdge = (a: string, b: string): void => {
+    if (!adjacency.has(a)) adjacency.set(a, new Set());
+    adjacency.get(a)!.add(b);
+  };
+  for (const rel of rels) {
+    if (!rel || typeof rel !== "object") continue;
+    const from = (rel as Record<string, unknown>).from;
+    const to = (rel as Record<string, unknown>).to;
+    if (typeof from === "string" && typeof to === "string" && from !== to) {
+      addEdge(from, to);
+      addEdge(to, from);
+    }
+  }
+
+  // BFS from the primary @id, collecting every node reachable
+  // through the undirected adjacency set.
+  const reachable = new Set<string>([primaryId]);
+  const queue: string[] = [primaryId];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    const neighbors = adjacency.get(cur);
+    if (!neighbors) continue;
+    for (const n of neighbors) {
+      if (!reachable.has(n)) {
+        reachable.add(n);
+        queue.push(n);
+      }
+    }
+  }
+
+  // Any @graph node @id not in the reachable set is an orphan.
+  const orphans = graphNodeIds.filter(id => !reachable.has(id));
+  if (orphans.length > 0) {
+    const sample = orphans.slice(0, 3).map(s => `"${s}"`).join(", ");
+    const more = orphans.length > 3 ? ` (+${orphans.length - 3} more)` : "";
+    return `The citemap's @graph[] contains ${orphans.length} orphan node${orphans.length === 1 ? "" : "s"} not reachable from the primary entity via relationships[]: ${sample}${more}. Per spec §1.3, every @graph node must be connected to the primary entity by at least one edge in relationships[] (directly or transitively).`;
+  }
+
   return null;
 }
 
