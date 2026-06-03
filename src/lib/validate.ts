@@ -25,6 +25,85 @@ const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES   = 1_048_576;  // 1 MB
 const USER_AGENT = "CiteMapsRegistry/0.1 (+https://citemaps.org)";
 
+// ── v3.3 §1.7 cross-document verification budgets ───────────
+// Per-fetch budget kept tight (8s) since the orchestrator fans
+// out in parallel batches and any one slow counter-party can
+// hold a slot. Overall budget caps the whole verification pass
+// at 25s so total validation time stays inside the submission
+// route's await window even on pathological citemaps with many
+// cross-doc edges. MAX_PARALLEL_FETCHES caps concurrency to
+// prevent a single citemap from saturating outbound sockets.
+const CROSS_FETCH_TIMEOUT_MS   = 8_000;
+const VERIFY_OVERALL_BUDGET_MS = 25_000;
+const MAX_PARALLEL_FETCHES     = 8;
+// Freshness window per v3.3 §1.7 step 3: "fresh (< 6 months
+// old)". 180 days = 6 × 30; slightly conservative vs calendar
+// months but stable across month-length variation.
+const FRESHNESS_WINDOW_MS = 180 * 24 * 60 * 60 * 1000;
+
+/** v3.3 §2.5 inverse-edge taxonomy.
+ *
+ *  For each forward edge type, the array lists relationship-row
+ *  types that would constitute a valid inverse claim in the
+ *  counter-party's citemap. An inverse-type row with `to` set
+ *  to OUR primary @id confirms the forward edge.
+ *
+ *  Types omitted (or with empty arrays) have no reciprocal
+ *  emission pattern in practice — `franchiseOf`, `founderOf`,
+ *  `sellsAt` per §2.5, plus `memberOf` (orgs rarely publish
+ *  per-member edges). For these, verification falls back to
+ *  the inline mirror check only (which is also weak for them),
+ *  so they almost always stay unverified. That's the documented
+ *  spec outcome — not a bug.
+ *
+ *  Symmetric types (`affiliatedWith`, `sameAs`) list themselves
+ *  as their own inverse — schema.org treats both as bidirectional
+ *  assertions of relationship.
+ */
+const INVERSE_EDGE_TYPES: Record<string, string[]> = {
+  // ── §2.1 schema.org-native ──
+  parentOrganizationOf: ["subOrganizationOf"],
+  subOrganizationOf:    ["parentOrganizationOf"],
+  memberOf:             [],
+  worksFor:             ["practitionerAt"],
+  affiliatedWith:       ["affiliatedWith"],
+  founderOf:            [],
+  sameAs:               ["sameAs"],
+  // ── §2.2 CiteMaps extensions ──
+  franchiseOf:          [],
+  locationOf:           ["locationOf"],
+  practitionerAt:       ["worksFor"],
+  predecessorOf:        ["successorOf"],
+  successorOf:          ["predecessorOf"],
+  // operatesAs handled separately — auto-verified self-edge
+  sellsAt:              [],
+};
+
+/** v3.3 §1.6 inline-mirror schema.org property map.
+ *
+ *  For each schema.org-native forward edge type, the array
+ *  lists property names on the counter-party's brand/entity
+ *  object whose inclusion of OUR primary @id also confirms the
+ *  edge (per §1.6's MUST emit both inline + relationships[] row).
+ *
+ *  Used as a fallback when the counter-party's relationships[]
+ *  doesn't carry an inverse-type row — for example a v3.2-era
+ *  producer that emits inline schema.org properties but hasn't
+ *  adopted the v3.3 relationships[] block.
+ *
+ *  Extension types (§2.2) have no schema.org inline mirror —
+ *  this map only covers the §2.1 set.
+ */
+const INLINE_MIRROR_PROPS: Record<string, string[]> = {
+  parentOrganizationOf: ["subOrganization"],
+  subOrganizationOf:    ["parentOrganization"],
+  memberOf:             ["member"],
+  worksFor:             ["employee"],
+  affiliatedWith:       ["affiliation"],
+  founderOf:            ["founder"],
+  sameAs:               ["sameAs"],
+};
+
 /** Result of a validation pass. The submit route maps this onto
  *  the RegistryEntry's status + parsed + statusMessage fields. */
 export interface ValidationResult {
@@ -171,12 +250,401 @@ export async function validate(url: string): Promise<ValidationResult> {
   const parsed = extractMetadata(citemapJson);
   parsed.rawHash = sha1(JSON.stringify(citemapJson));
 
+  // v3.3 §1.7 cross-document verification pass. Runs after
+  // shape validation; never blocks indexing per §1.7 step 4.
+  // No-ops when the document has no cross-doc relationships.
+  // Bounded by VERIFY_OVERALL_BUDGET_MS so a slow counter-party
+  // can't extend the submission route's await window indefinitely.
+  try {
+    const verify = await verifyCrossDocumentEdges(citemapJson);
+    if (verify.totalCrossDoc > 0 || verify.verifiedSelf > 0) {
+      parsed.crossDocEdgeCount = verify.totalCrossDoc;
+      parsed.verifiedEdgeCount = verify.verified;
+      parsed.verifiedSelfEdgeCount = verify.verifiedSelf;
+    }
+  } catch {
+    // Verification failure MUST NOT block indexing per §1.7
+    // step 4. Swallow silently — the absence of verification
+    // fields on parsed is itself the signal that we tried and
+    // couldn't complete the pass.
+  }
+
   return {
     ok: true,
     format,
     status: "indexed",
     parsed,
   };
+}
+
+// ── v3.3 §1.7 cross-document verification ─────────────────
+
+/** Orchestrate cross-document edge verification per v3.3 §1.7.
+ *
+ *  Walks relationships[], classifies each edge as:
+ *    - operatesAs self-edge → auto-verified (§2.5)
+ *    - local (both endpoints in this document) → not counted
+ *      (verification within a single document is trivial; v1
+ *      scope is cross-document only)
+ *    - cross-document (`to` is absolute http(s) URL outside
+ *      local @id set) → fetch counter-party + check inverse
+ *
+ *  Counter-party fetches are deduped by URL (multiple edges to
+ *  the same target reuse a single fetch), run in parallel
+ *  batches capped at MAX_PARALLEL_FETCHES, and time-budgeted
+ *  by VERIFY_OVERALL_BUDGET_MS. Fetch failures and missing
+ *  inverse edges leave the per-edge verified state at false
+ *  per §1.7 step 4; this function only returns aggregate
+ *  counts.
+ */
+async function verifyCrossDocumentEdges(
+  obj: Record<string, unknown>,
+): Promise<{ totalCrossDoc: number; verified: number; verifiedSelf: number }> {
+  const rels = Array.isArray(obj.relationships) ? obj.relationships : [];
+  if (rels.length === 0) {
+    return { totalCrossDoc: 0, verified: 0, verifiedSelf: 0 };
+  }
+
+  // Identify primary @id — required to know what counter-party
+  // inverse edges should point AT to confirm us.
+  const brand = obj.brand as Record<string, unknown> | undefined;
+  const entity = obj.entity as Record<string, unknown> | undefined;
+  const primary = brand ?? entity;
+  const primaryId = primary && typeof primary["@id"] === "string"
+    ? (primary["@id"] as string)
+    : null;
+  if (!primaryId) {
+    return { totalCrossDoc: 0, verified: 0, verifiedSelf: 0 };
+  }
+
+  // Local @id set: primary + every @graph node @id. Edges with
+  // `to` in this set are local (intra-document); edges with `to`
+  // not in this set AND matching isAbsoluteHttpUrl are cross-doc.
+  const localIds = new Set<string>([primaryId]);
+  const graph = Array.isArray(obj["@graph"]) ? obj["@graph"] : [];
+  for (const node of graph) {
+    if (node && typeof node === "object" && !Array.isArray(node)) {
+      const id = (node as Record<string, unknown>)["@id"];
+      if (typeof id === "string") localIds.add(id);
+    }
+  }
+
+  let verifiedSelf = 0;
+  const crossDocEdges: Array<{ to: string; type: string }> = [];
+
+  for (const rel of rels) {
+    if (!rel || typeof rel !== "object") continue;
+    const r = rel as Record<string, unknown>;
+    const from = r.from;
+    const to = r.to;
+    const type = r.type;
+    if (typeof from !== "string" || typeof to !== "string" || typeof type !== "string") {
+      continue;
+    }
+
+    // §2.5 operatesAs self-edge → intrinsically self-verifying.
+    // No fetch needed; the primary is asserting about itself.
+    if (from === to && type === "operatesAs") {
+      verifiedSelf++;
+      continue;
+    }
+
+    // Skip local edges — both endpoints inside this document.
+    // Verification within a single document is trivially true
+    // (the producer asserts both sides); not in v1 scope.
+    if (localIds.has(to)) continue;
+
+    // Cross-document: must be an absolute http(s) URL. URN /
+    // relative / opaque @id schemes can't be fetched, so they
+    // stay unverified by definition.
+    if (!isAbsoluteHttpUrl(to)) continue;
+
+    crossDocEdges.push({ to, type });
+  }
+
+  if (crossDocEdges.length === 0) {
+    return { totalCrossDoc: 0, verified: 0, verifiedSelf };
+  }
+
+  // Dedupe counter-party fetches by URL (fragment-stripped, so
+  // multiple edges pointing at different fragments of the same
+  // document share one fetch). Typical case: a citemap with 3
+  // edges all pointing at parent corp's #org / #parent-org /
+  // similar share a single document.
+  const targetUrls = Array.from(new Set(crossDocEdges.map(e => stripFragment(e.to))));
+
+  // Overall budget controller — fires once we exceed
+  // VERIFY_OVERALL_BUDGET_MS regardless of how many fetches
+  // are still in flight. Each crossFetchCitemap call subscribes
+  // to this signal and aborts when fired.
+  const overallController = new AbortController();
+  const overallTimeout = setTimeout(
+    () => overallController.abort(),
+    VERIFY_OVERALL_BUDGET_MS,
+  );
+
+  try {
+    const counterParties = new Map<
+      string,
+      { json: Record<string, unknown>; lastModified: string | null } | null
+    >();
+
+    // Parallel batches — fan out MAX_PARALLEL_FETCHES at a time
+    // to bound concurrent outbound sockets.
+    for (let i = 0; i < targetUrls.length; i += MAX_PARALLEL_FETCHES) {
+      if (overallController.signal.aborted) break;
+      const batch = targetUrls.slice(i, i + MAX_PARALLEL_FETCHES);
+      const results = await Promise.all(
+        batch.map(async (url) => ({
+          url,
+          result: await crossFetchCitemap(url, overallController.signal),
+        })),
+      );
+      for (const { url, result } of results) counterParties.set(url, result);
+    }
+
+    let verified = 0;
+    for (const edge of crossDocEdges) {
+      const cp = counterParties.get(stripFragment(edge.to));
+      if (!cp) continue;  // fetch failed / blocked / timed out
+      if (!isCounterPartyFresh(cp.json, cp.lastModified)) continue;
+      if (!findInverseEdge(cp.json, primaryId, edge.type)) continue;
+      verified++;
+    }
+
+    return { totalCrossDoc: crossDocEdges.length, verified, verifiedSelf };
+  } finally {
+    clearTimeout(overallTimeout);
+  }
+}
+
+/** SSRF-guarded counter-party citemap fetch. Mirrors the
+ *  primary validate() fetch posture: hostOf + isPrivateHost
+ *  gate, AbortController timeout, capped body read. Closes
+ *  Finding B (the §1.7 cross-fetch surface that the original
+ *  single-URL SSRF gate doesn't cover).
+ *
+ *  Returns null on any failure — bad URL, private host,
+ *  network error, timeout, non-2xx, non-citemap body. Caller
+ *  treats null as "stays unverified" per §1.7 step 4.
+ *
+ *  Honors the parent overall-budget signal: aborts immediately
+ *  when the verification pass's outer budget fires, so a slow
+ *  counter-party can't extend the overall pass beyond
+ *  VERIFY_OVERALL_BUDGET_MS.
+ */
+async function crossFetchCitemap(
+  url: string,
+  parentSignal: AbortSignal,
+): Promise<{ json: Record<string, unknown>; lastModified: string | null } | null> {
+  // SSRF gate — same posture as validate()'s primary fetch.
+  // Catches localhost / 127.0.0.1 / 10.x / 192.168.x / 169.254.x
+  // (link-local + cloud metadata) / IPv6 private. A malicious
+  // citemap could list relationships[].to pointing at internal
+  // infra; this gate stops the fetch before any TCP connect.
+  const host = hostOf(url);
+  if (!host || isPrivateHost(host)) return null;
+
+  // Strip fragment for fetch — the @id may include #org or
+  // similar but the fetchable URL is the document itself.
+  const fetchUrl = stripFragment(url);
+
+  // Per-fetch controller — aborts on either the per-fetch
+  // timeout OR the parent overall-budget signal, whichever
+  // fires first.
+  const controller = new AbortController();
+  const fetchTimeout = setTimeout(() => controller.abort(), CROSS_FETCH_TIMEOUT_MS);
+  const onParentAbort = () => controller.abort();
+  if (parentSignal.aborted) {
+    clearTimeout(fetchTimeout);
+    return null;
+  }
+  parentSignal.addEventListener("abort", onParentAbort);
+
+  try {
+    const response = await fetch(fetchUrl, {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        "Accept": "application/json, application/ld+json, text/html",
+        "User-Agent": USER_AGENT,
+      },
+      redirect: "follow",
+    });
+    if (!response.ok) return null;
+
+    const lastModified = response.headers.get("last-modified");
+    const body = await readBodyCapped(response);
+    const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+
+    let parsed: Record<string, unknown> | null = null;
+    if (contentType.includes("application/json") || contentType.includes("application/ld+json")) {
+      try {
+        parsed = JSON.parse(body) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    } else if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
+      parsed = extractCitemapFromHtml(body);
+    } else {
+      // Sniff
+      const trimmed = body.trimStart();
+      if (trimmed.startsWith("{")) {
+        try {
+          parsed = JSON.parse(body) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      } else if (trimmed.startsWith("<")) {
+        parsed = extractCitemapFromHtml(body);
+      }
+    }
+
+    if (!parsed || !isCitemapShape(parsed)) return null;
+    return { json: parsed, lastModified };
+  } catch {
+    // AbortError / network error / readBodyCapped throw on
+    // oversized body — all treated as "fetch failed, stays
+    // unverified" per §1.7 step 4.
+    return null;
+  } finally {
+    clearTimeout(fetchTimeout);
+    parentSignal.removeEventListener("abort", onParentAbort);
+  }
+}
+
+/** §1.7 inverse-edge detection. Returns true when the
+ *  counter-party citemap asserts a relationship pointing back
+ *  at our primary @id that's compatible with the forward
+ *  edge's type — either as a relationships[] row of an inverse
+ *  type (§2.5) or as an inline schema.org mirror property
+ *  (§1.6) for the seven §2.1 native types. */
+function findInverseEdge(
+  counterParty: Record<string, unknown>,
+  ourPrimaryId: string,
+  forwardType: string,
+): boolean {
+  // 1. relationships[] row of an inverse type pointing at us.
+  const inverses = INVERSE_EDGE_TYPES[forwardType] ?? [];
+  if (inverses.length > 0) {
+    const rels = Array.isArray(counterParty.relationships)
+      ? counterParty.relationships
+      : [];
+    for (const rel of rels) {
+      if (!rel || typeof rel !== "object") continue;
+      const r = rel as Record<string, unknown>;
+      const to = r.to;
+      const type = r.type;
+      if (typeof to !== "string" || typeof type !== "string") continue;
+      if (to === ourPrimaryId && inverses.includes(type)) return true;
+    }
+  }
+
+  // 2. Inline schema.org mirror property on the counter-party's
+  // brand/entity object. Per §1.6, schema.org-native types MUST
+  // be mirrored inline AND in relationships[]; this branch
+  // catches v3.2-era producers who emit inline only.
+  const mirrors = INLINE_MIRROR_PROPS[forwardType] ?? [];
+  if (mirrors.length === 0) return false;
+  const cpBrand = counterParty.brand as Record<string, unknown> | undefined;
+  const cpEntity = counterParty.entity as Record<string, unknown> | undefined;
+  const cpSource = cpBrand ?? cpEntity;
+  if (!cpSource) return false;
+  for (const prop of mirrors) {
+    if (referencesId(cpSource[prop], ourPrimaryId)) return true;
+  }
+
+  return false;
+}
+
+/** Walk a schema.org property value looking for a reference to
+ *  the target @id. Handles the common JSON-LD shapes: bare
+ *  string ID, object with `@id`, or array of either. */
+function referencesId(value: unknown, targetId: string): boolean {
+  if (!value) return false;
+  if (typeof value === "string") return value === targetId;
+  if (Array.isArray(value)) return value.some(v => referencesId(v, targetId));
+  if (typeof value === "object") {
+    const id = (value as Record<string, unknown>)["@id"];
+    return typeof id === "string" && id === targetId;
+  }
+  return false;
+}
+
+/** §1.7 step 3 freshness gate. Counter-party must be < 6
+ *  months old by one of: top-level `lastVerified`, top-level
+ *  `lastUpdated`, `citationContract.lastUpdated`, the most
+ *  recent `temporalRecord.events[].date`, or HTTP
+ *  `Last-Modified` header.
+ *
+ *  Returns false when no date signal can be parsed — a
+ *  counter-party that can't prove freshness stays unverified
+ *  per §1.7 step 4 (conservative: absence of evidence is not
+ *  evidence of freshness). */
+function isCounterPartyFresh(
+  counterParty: Record<string, unknown>,
+  lastModified: string | null,
+): boolean {
+  const candidates: Array<string | undefined> = [];
+
+  // Top-level fields the spec explicitly cites
+  if (typeof counterParty.lastVerified === "string") {
+    candidates.push(counterParty.lastVerified as string);
+  }
+  if (typeof counterParty.lastUpdated === "string") {
+    candidates.push(counterParty.lastUpdated as string);
+  }
+
+  // citationContract.lastUpdated — most commonly populated by
+  // the citemaps.ai emitter even when the top-level isn't.
+  const cc = counterParty.citationContract as Record<string, unknown> | undefined;
+  if (cc && typeof cc.lastUpdated === "string") {
+    candidates.push(cc.lastUpdated as string);
+  }
+
+  // temporalRecord — pull the most recent event date if events
+  // are present. Per §3, temporalRecord is always-on but may be
+  // an empty array.
+  const tr = counterParty.temporalRecord;
+  if (Array.isArray(tr)) {
+    const dates = tr
+      .map(ev => (ev && typeof ev === "object" ? (ev as Record<string, unknown>).date : null))
+      .filter((d): d is string => typeof d === "string");
+    if (dates.length > 0) {
+      const sorted = [...dates].sort();
+      candidates.push(sorted[sorted.length - 1]);  // latest
+    }
+  } else if (tr && typeof tr === "object") {
+    const trObj = tr as Record<string, unknown>;
+    if (typeof trObj.lastVerified === "string") candidates.push(trObj.lastVerified as string);
+    if (typeof trObj.lastUpdated === "string") candidates.push(trObj.lastUpdated as string);
+  }
+
+  // HTTP Last-Modified — final fallback per §1.7.
+  if (lastModified) candidates.push(lastModified);
+
+  const now = Date.now();
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const ts = Date.parse(raw);
+    if (Number.isNaN(ts)) continue;
+    if (now - ts < FRESHNESS_WINDOW_MS) return true;
+  }
+  return false;
+}
+
+function isAbsoluteHttpUrl(s: string): boolean {
+  return /^https?:\/\//i.test(s);
+}
+
+function stripFragment(url: string): string {
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return url;
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────

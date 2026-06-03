@@ -82,6 +82,30 @@ export interface ParsedCitemap {
    *  no AI-grounding weight. Absent for citemaps that don't declare
    *  one (legacy / hand-authored / unaware publishers). */
   registryToken?: string;
+  // ── v3.3 §1.7 cross-document verification summary ──────────
+  // Populated by the verification pass that runs after shape
+  // validation. Surfaces aggregate counts only — per-edge state
+  // can be recomputed on demand by re-validating. All three
+  // fields absent when the document uses no relationships[]
+  // or no cross-document edges (then there's nothing to count).
+  /** Total cross-document edges considered for verification —
+   *  edges in `relationships[]` whose `to` is an absolute URL
+   *  outside the local @graph node set. Self-edges (`operatesAs`)
+   *  + edges with both endpoints in the local document are
+   *  excluded from this count and counted under
+   *  `verifiedSelfEdgeCount` / `localEdgeCount` respectively. */
+  crossDocEdgeCount?: number;
+  /** Subset of `crossDocEdgeCount` where the counter-party
+   *  citemap was fetched, was fresh (< 6 months old), and
+   *  asserted an inverse edge per v3.3 §1.7 + §2.5 — either as
+   *  an inline schema.org mirror property or as a row in the
+   *  counter-party's relationships[] with an inverse type. */
+  verifiedEdgeCount?: number;
+  /** Self-edges of type `operatesAs` (multi-vertical pattern,
+   *  §1.8 + §2.5) — intrinsically self-verifying; counted
+   *  separately so consumers can distinguish self-verifications
+   *  from cross-document verifications. */
+  verifiedSelfEdgeCount?: number;
 }
 
 /** The full registry entry as persisted in KV. */
