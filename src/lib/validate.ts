@@ -36,6 +36,28 @@ const USER_AGENT = "CiteMapsRegistry/0.1 (+https://citemaps.org)";
 const CROSS_FETCH_TIMEOUT_MS   = 8_000;
 const VERIFY_OVERALL_BUDGET_MS = 25_000;
 const MAX_PARALLEL_FETCHES     = 8;
+
+// ── Video Phase 2c: channelOf cross-fetch verification ──────
+// Custom-type URI minted by Studio's relationships helper at
+// /Users/minime/CoWork/CiteMaps/citemaps-src/src/lib/citemap/
+// relationships.ts (VIDEO_EDGE.channelOf). Both ends share the
+// same origin (channel @id under {primary-origin}/#channel-{id}
+// and `to` = selfId), so channelOf edges are intra-document by
+// construction — they never appear in the §1.7 cross-doc edge
+// set. Phase 2c adds an orthogonal verification path: fetch the
+// MediaChannel @graph node's `url` field (the actual platform
+// URL, e.g. https://youtube.com/@entitygraph) and confirm it
+// backlinks to the primary entity's domain. Opus 4.8 addendum §4.
+const CHANNEL_OF_TYPE = "https://citemaps.org/ext/v1/types/channelOf";
+// Tighter per-fetch budget than cross-doc since platform HTML
+// pages (YouTube about-tab + similar) are typically larger than
+// citemap.json + slower to render. 6s keeps the channelOf pass
+// inside the overall 25s verify budget even with ~4 channels to
+// verify in parallel. Channel pages can be html-heavy; raise the
+// body cap to 2 MB so we don't truncate before the link section
+// loads.
+const CHANNEL_FETCH_TIMEOUT_MS = 6_000;
+const CHANNEL_MAX_BODY_BYTES   = 2_097_152; // 2 MB
 // Freshness window per v3.3 §1.7 step 3: "fresh (< 6 months
 // old)". 180 days = 6 × 30; slightly conservative vs calendar
 // months but stable across month-length variation.
@@ -269,6 +291,25 @@ export async function validate(url: string): Promise<ValidationResult> {
     // couldn't complete the pass.
   }
 
+  // Video Phase 2c (2026-06-06) — channelOf cross-fetch
+  // verification. Orthogonal to §1.7 cross-doc verification
+  // because channelOf edges are intra-document (both endpoints
+  // mint under the primary's origin). Instead we fetch each
+  // MediaChannel node's platform URL (the youtube.com / vimeo /
+  // etc. page) and confirm it backlinks to the primary's
+  // domain. Same swallow-on-failure rule per §1.7 step 4 —
+  // an unverified channelOf edge stays valid published signal.
+  try {
+    const channelVerify = await verifyChannelOwnership(citemapJson);
+    if (channelVerify.totalChannelOf > 0) {
+      parsed.channelOwnershipEdgeCount = channelVerify.totalChannelOf;
+      parsed.verifiedChannelOwnershipEdgeCount = channelVerify.verified;
+    }
+  } catch {
+    // Same posture as cross-doc: never block indexing on a
+    // verification failure.
+  }
+
   return {
     ok: true,
     format,
@@ -415,6 +456,218 @@ async function verifyCrossDocumentEdges(
     return { totalCrossDoc: crossDocEdges.length, verified, verifiedSelf };
   } finally {
     clearTimeout(overallTimeout);
+  }
+}
+
+// ── Video Phase 2c: channelOf cross-fetch verification ─────
+
+/** Verify channelOf edges by fetching each MediaChannel node's
+ *  platform URL and checking for a backlink to the primary
+ *  entity's domain. Per Opus 4.8 video addendum §4:
+ *
+ *    "A channel-backlink to the DNS-verified citemap is a
+ *    stronger ownership signal than the YouTube verified
+ *    badge — anyone who controls the channel can place the
+ *    backlink; only the domain owner can place the citemap."
+ *
+ *  Verification model is intentionally simple — substring match
+ *  on the primary's hostname in the page HTML. Catches the
+ *  common case (channel About tab + description listing the
+ *  website URL) without committing to a brittle parse of every
+ *  platform's specific HTML shape. False negatives (legit
+ *  ownership claim where the channel page doesn't expose the
+ *  link in HTML — SPA-rendered after JS) leave the edge
+ *  unverified, same as cross-doc fetch failures.
+ *
+ *  Returns aggregate counts only; per-edge verified state is
+ *  computed by the validator at read time from these aggregates
+ *  + the relationships[] structure.
+ */
+async function verifyChannelOwnership(
+  obj: Record<string, unknown>,
+): Promise<{ totalChannelOf: number; verified: number }> {
+  const rels = Array.isArray(obj.relationships) ? obj.relationships : [];
+  if (rels.length === 0) {
+    return { totalChannelOf: 0, verified: 0 };
+  }
+
+  // Identify primary entity's domain — the backlink target.
+  // Pull from brand.url (preferred) or brand.domain (fallback).
+  // Without a parseable primary domain we have nothing to
+  // verify against; return early.
+  const brand = obj.brand as Record<string, unknown> | undefined;
+  const entity = obj.entity as Record<string, unknown> | undefined;
+  const primary = brand ?? entity;
+  if (!primary) {
+    return { totalChannelOf: 0, verified: 0 };
+  }
+  const primaryUrl = typeof primary.url === "string" ? primary.url : "";
+  const primaryDomain = typeof primary.domain === "string" ? primary.domain : "";
+  const primaryHost = primaryDomain.trim() || hostOf(primaryUrl);
+  if (!primaryHost) {
+    return { totalChannelOf: 0, verified: 0 };
+  }
+  // Normalize: strip www. + lowercase for the substring match.
+  // YouTube/etc. pages often show the URL without the www. prefix
+  // even when the canonical includes it (and vice versa). Match
+  // on the bare host portion to maximize legitimate hits.
+  const needle = primaryHost.toLowerCase().replace(/^www\./, "");
+  if (!needle || needle.length < 4) {
+    // Defensive — a sub-4-char hostname needle would false-positive
+    // on virtually any HTML page. Skip entirely.
+    return { totalChannelOf: 0, verified: 0 };
+  }
+
+  // Index @graph nodes by @id so each channelOf edge can find
+  // its MediaChannel node + read the platform `url`. Channel
+  // nodes are minted by Studio's relationships helper as
+  // multi-typed ["Organization", <MediaChannel ext URL>] with
+  // the platform URL on node.url. Edges with no resolvable @id
+  // (validator missed an orphan; or hand-authored row with bad
+  // from) get skipped — no node, no fetch target.
+  const graph = Array.isArray(obj["@graph"]) ? obj["@graph"] : [];
+  const nodeById = new Map<string, Record<string, unknown>>();
+  for (const node of graph) {
+    if (node && typeof node === "object" && !Array.isArray(node)) {
+      const id = (node as Record<string, unknown>)["@id"];
+      if (typeof id === "string") {
+        nodeById.set(id, node as Record<string, unknown>);
+      }
+    }
+  }
+
+  // Collect channelOf edges + their fetchable channel URLs.
+  // Dedupe by URL so multiple channelOf edges pointing at the
+  // same channel (shouldn't happen per the catalog model but
+  // defensive) share a single fetch.
+  const claims: Array<{ url: string }> = [];
+  const seenUrls = new Set<string>();
+  for (const rel of rels) {
+    if (!rel || typeof rel !== "object") continue;
+    const r = rel as Record<string, unknown>;
+    if (r.type !== CHANNEL_OF_TYPE) continue;
+    const from = typeof r.from === "string" ? r.from : "";
+    if (!from) continue;
+    const channelNode = nodeById.get(from);
+    if (!channelNode) continue;
+    const channelUrl = typeof channelNode.url === "string" ? channelNode.url.trim() : "";
+    if (!channelUrl || !isAbsoluteHttpUrl(channelUrl)) continue;
+    if (seenUrls.has(channelUrl)) continue;
+    seenUrls.add(channelUrl);
+    claims.push({ url: channelUrl });
+  }
+
+  if (claims.length === 0) {
+    return { totalChannelOf: 0, verified: 0 };
+  }
+
+  // Overall budget — shares the VERIFY_OVERALL_BUDGET_MS ceiling
+  // with cross-doc verification. In practice these run
+  // sequentially (cross-doc first, then channelOf), so the
+  // channelOf pass effectively gets whatever budget remains. We
+  // re-arm a fresh controller here because the cross-doc
+  // controller has already cleared; the orchestrator's outer
+  // try/catch ensures total await time stays bounded by the
+  // submission route's request timeout regardless.
+  const overallController = new AbortController();
+  const overallTimeout = setTimeout(
+    () => overallController.abort(),
+    VERIFY_OVERALL_BUDGET_MS,
+  );
+
+  try {
+    let verified = 0;
+    // Parallel batches — same cap as cross-doc fetches to bound
+    // concurrent outbound sockets across both verification passes
+    // running back-to-back.
+    for (let i = 0; i < claims.length; i += MAX_PARALLEL_FETCHES) {
+      if (overallController.signal.aborted) break;
+      const batch = claims.slice(i, i + MAX_PARALLEL_FETCHES);
+      const results = await Promise.all(
+        batch.map(async (c) => fetchAndCheckBacklink(c.url, needle, overallController.signal)),
+      );
+      verified += results.filter(Boolean).length;
+    }
+
+    return { totalChannelOf: claims.length, verified };
+  } finally {
+    clearTimeout(overallTimeout);
+  }
+}
+
+/** Fetch a channel URL with SSRF + timeout + body-cap guards
+ *  and check whether the response HTML contains the primary
+ *  entity's hostname. Returns true when the backlink is found,
+ *  false on any fetch failure / not-found.
+ *
+ *  Match is case-insensitive substring on the host needle (already
+ *  lowercased + www-stripped by caller). Doesn't try to
+ *  distinguish "link to our site" from "mention of our domain in
+ *  unrelated context" — for ownership-claim verification the
+ *  signal is "domain owner placed a reference," which the
+ *  substring captures with very low false-positive risk (a
+ *  channel page mentioning an arbitrary other domain in passing
+ *  is rare).
+ */
+async function fetchAndCheckBacklink(
+  url: string,
+  needle: string,
+  parentSignal: AbortSignal,
+): Promise<boolean> {
+  // SSRF gate — same posture as crossFetchCitemap. Channel URLs
+  // SHOULD be public platforms (YouTube, Vimeo, podcast hosts),
+  // but a malicious citemap could mint a MediaChannel node
+  // pointing at internal infra. Block before any TCP connect.
+  const host = hostOf(url);
+  if (!host || isPrivateHost(host)) return false;
+
+  // Per-fetch controller — aborts on either the per-fetch
+  // timeout OR the parent overall-budget signal, whichever
+  // fires first.
+  const controller = new AbortController();
+  const fetchTimeout = setTimeout(() => controller.abort(), CHANNEL_FETCH_TIMEOUT_MS);
+  const onParentAbort = () => controller.abort();
+  if (parentSignal.aborted) {
+    clearTimeout(fetchTimeout);
+    return false;
+  }
+  parentSignal.addEventListener("abort", onParentAbort);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      signal: controller.signal,
+      headers: {
+        // Channel pages are HTML; accept html primarily but allow
+        // a broad set so platforms that vary by accept header
+        // don't 406 us.
+        "Accept": "text/html, application/xhtml+xml, */*;q=0.8",
+        "User-Agent": USER_AGENT,
+      },
+      redirect: "follow",
+    });
+    if (!response.ok) return false;
+
+    // Body-cap with channel-specific limit (2 MB vs cross-doc's
+    // 1 MB) — platform HTML is typically larger because of
+    // inline scripts + tracking pixels + JSON blobs.
+    const contentLength = parseInt(response.headers.get("content-length") ?? "0", 10);
+    if (contentLength > CHANNEL_MAX_BODY_BYTES) return false;
+    const body = await response.text();
+    if (body.length > CHANNEL_MAX_BODY_BYTES) return false;
+
+    // Substring match on the lowercased needle. Platform HTML
+    // (YouTube, Vimeo, podcast hosts) typically renders the
+    // owner's website in About-tab + description as either an
+    // <a href> or a plain-text URL. Either form contains the
+    // hostname as a substring.
+    return body.toLowerCase().includes(needle);
+  } catch {
+    // AbortError / network error / non-2xx — all unverified.
+    return false;
+  } finally {
+    clearTimeout(fetchTimeout);
+    parentSignal.removeEventListener("abort", onParentAbort);
   }
 }
 

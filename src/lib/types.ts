@@ -106,6 +106,24 @@ export interface ParsedCitemap {
    *  separately so consumers can distinguish self-verifications
    *  from cross-document verifications. */
   verifiedSelfEdgeCount?: number;
+  /** Total `channelOf` edges from the Video pillar (Phase 2c
+   *  channel-ownership extension under custom-type URI
+   *  `https://citemaps.org/ext/v1/types/channelOf`). These are
+   *  intra-document by construction (both endpoints minted under
+   *  the primary's origin) so they don't surface in
+   *  `crossDocEdgeCount`, but they participate in a different
+   *  verification model: backlink-check against the channel's
+   *  platform URL (the MediaChannel @graph node's `url` field).
+   *  Opus 4.8 addendum §4. Absent when no channelOf edges
+   *  present. */
+  channelOwnershipEdgeCount?: number;
+  /** Subset of `channelOwnershipEdgeCount` where the channel
+   *  URL was fetched + the HTML body contains a backlink to the
+   *  primary entity's domain (case-insensitive hostname match).
+   *  Unverified edges (fetch failed, blocked host, no backlink
+   *  found) stay valid published signal per §1.7 step 4 — they
+   *  just don't increment this count. */
+  verifiedChannelOwnershipEdgeCount?: number;
 }
 
 /** The full registry entry as persisted in KV. */
