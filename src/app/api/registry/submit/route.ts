@@ -60,7 +60,17 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 15;  // validation fetch is bounded at 10s
 
 const MAX_PER_IP_PER_HOUR  = 10;
-const MAX_PER_URL_PER_HOUR = 1;
+// 2026-06-05: bumped 1 → 10. The 1/hr ceiling was a v0
+// anti-abuse default that broke the legitimate Studio
+// auto-submit flow — every regenerate on a Property triggers a
+// resubmit, and a user iterating through publish-test-fix loops
+// would burn the hour-cap on the third try and silently get
+// 429'd back to a stale registry state. New ceiling matches the
+// per-IP limit + trusted callers (REGISTRY_SUBMIT_TOKEN holders,
+// i.e. Studio proxy + ops scripts) bypass entirely (see the
+// `trusted` gate below). Public 10/hr ceiling is the safety net
+// for unauthenticated open-internet submissions only.
+const MAX_PER_URL_PER_HOUR = 10;
 const RECHECK_INTERVAL_DAYS_INDEXED = 7;
 const RECHECK_INTERVAL_DAYS_INVALID = 30;
 
@@ -77,8 +87,20 @@ function err(status: number, body: SubmissionError): NextResponse {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // Auth gate (optional, env-driven).
+  // Auth gate (optional, env-driven). When REGISTRY_SUBMIT_TOKEN
+  // is set and the caller presents the matching bearer, we treat
+  // them as a trusted internal caller — Studio's proxy route,
+  // ops scripts, registry-side cron. Trusted callers skip the
+  // rate-limit enforcement below (still counted for observability,
+  // just not enforced) since the rate limits are anti-abuse
+  // protection against open-internet submissions, not against
+  // legitimate Studio reflows.
+  //
+  // When REGISTRY_SUBMIT_TOKEN is unset (no auth configured),
+  // every caller is anonymous — `trusted` stays false and the
+  // full rate-limit ceiling applies.
   const requiredToken = process.env.REGISTRY_SUBMIT_TOKEN;
+  let trusted = false;
   if (requiredToken) {
     const auth = req.headers.get("authorization") ?? "";
     const presented = auth.toLowerCase().startsWith("bearer ")
@@ -87,6 +109,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (presented !== requiredToken) {
       return err(401, { success: false, error: "Missing or invalid bearer token.", code: "unauthorized" });
     }
+    trusted = true;
   }
 
   // Parse body.
@@ -114,12 +137,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     ? body.source
     : "manual_api";
 
-  // Rate-limit gates. IP first (broader), URL second.
+  // Rate-limit gates. IP first (broader), URL second. Counters
+  // are bumped regardless (observability for ops dashboards even
+  // when not enforced); enforcement is skipped for trusted
+  // callers per the auth-gate comment above. Anonymous /
+  // open-internet callers still hit both ceilings.
   // x-forwarded-for is what Vercel populates; fall back to a
   // string that's stable per-deployment so we never throw.
   const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
   const ipCount = await bumpIpRate(ip);
-  if (ipCount > MAX_PER_IP_PER_HOUR) {
+  if (!trusted && ipCount > MAX_PER_IP_PER_HOUR) {
     return err(429, {
       success: false,
       error: `Submission rate limit exceeded for this IP. Try again in an hour.`,
@@ -128,7 +155,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     });
   }
   const urlCount = await bumpUrlRate(canonical);
-  if (urlCount > MAX_PER_URL_PER_HOUR) {
+  if (!trusted && urlCount > MAX_PER_URL_PER_HOUR) {
     return err(429, {
       success: false,
       error: `This URL has already been submitted recently. Try again in an hour.`,
