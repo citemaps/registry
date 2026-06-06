@@ -27,6 +27,7 @@ import {
   findIdByUrl,
   getEntry,
   newRegistryId,
+  popDueRechecks,
   saveEntry,
   updateEntry,
 } from "@/lib/kv";
@@ -39,6 +40,11 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;   // batch of 10 × ~5s probe + occasional validate fetches
 
 const BATCH_SIZE = 10;
+// Phase 2c follow-on 2026-06-06 — cap on existing-entry rechecks
+// per cron tick. Conservative initial value; cron's 60s maxDuration
+// fits ~5-8 fetches comfortably alongside the new-domain probes
+// above. Raise once registry-side telemetry confirms the workload.
+const RECHECK_BATCH_SIZE = 5;
 const RECHECK_INTERVAL_DAYS_INDEXED = 7;
 const RECHECK_INTERVAL_DAYS_INVALID = 30;
 
@@ -57,6 +63,21 @@ interface ProbeReport {
       url?: string;
       message?: string;
     }>;
+    // Phase 2c follow-on 2026-06-06 — recheck pass stats.
+    // Distinct counters so seed-queue activity stays
+    // observably separate from existing-entry recheck activity
+    // in ops dashboards.
+    rechecks?: {
+      processed: number;
+      indexed: number;
+      invalid: number;
+      details: Array<{
+        id: string;
+        url?: string;
+        result: "recheck_indexed" | "recheck_invalid" | "recheck_skipped";
+        message?: string;
+      }>;
+    };
   };
 }
 
@@ -181,6 +202,89 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         message: `Pipeline error: ${String(e)}`,
       });
     }
+  }
+
+  // ── Phase 2c follow-on: recheck pass ─────────────────────
+  // Drain a batch of existing entries whose nextRecheckAt has
+  // passed and re-validate them. This is the loop that was
+  // missing in the original probe cron — nextRecheckAt was
+  // being written by submit + the new-domain hit path but
+  // never read, so customers who didn't manually re-submit
+  // had their registry record frozen at the original
+  // validation. With this pass, indexed entries auto-revalidate
+  // every 7 days and invalid entries every 30 (cadences set by
+  // RECHECK_INTERVAL_DAYS_*).
+  //
+  // The popDueRechecks helper atomically removes ids from the
+  // recheck queue before processing. If revalidation succeeds,
+  // saveEntry (via updateEntry) re-adds them with the new
+  // nextRecheckAt score. If revalidation fails transiently
+  // (network, registry-side bug), the entry drops off the
+  // recheck queue and won't auto-revalidate again until the
+  // next time the customer submits via Studio. Trade-off:
+  // accept a one-cycle gap on transient failures rather than
+  // risking an infinite-retry storm.
+  const recheckIds = await popDueRechecks(RECHECK_BATCH_SIZE);
+  const recheckStats = {
+    processed: recheckIds.length,
+    indexed: 0,
+    invalid: 0,
+    details: [] as Array<{
+      id: string;
+      url?: string;
+      result: "recheck_indexed" | "recheck_invalid" | "recheck_skipped";
+      message?: string;
+    }>,
+  };
+  for (const id of recheckIds) {
+    const existing = await getEntry(id);
+    if (!existing) {
+      // Entry was deleted between the ZRANGE and now — skip
+      // silently. Not a real error; the queue is just slightly
+      // out of sync with the entry set.
+      recheckStats.details.push({
+        id,
+        result: "recheck_skipped",
+        message: "Entry no longer exists; queue out of sync.",
+      });
+      continue;
+    }
+    try {
+      const result = await validate(existing.url);
+      const now = new Date().toISOString();
+      const recheckDays = result.status === "indexed"
+        ? RECHECK_INTERVAL_DAYS_INDEXED
+        : RECHECK_INTERVAL_DAYS_INVALID;
+      const nextRecheckAt = new Date(Date.now() + recheckDays * 86_400_000).toISOString();
+      await updateEntry(id, {
+        format: result.format,
+        status: result.status,
+        statusMessage: result.statusMessage,
+        parsed: result.parsed,
+        lastValidatedAt: now,
+        nextRecheckAt,
+        validationCount: (existing.validationCount ?? 0) + 1,
+      });
+      if (result.status === "indexed") recheckStats.indexed++;
+      else recheckStats.invalid++;
+      recheckStats.details.push({
+        id,
+        url: existing.url,
+        result: result.status === "indexed" ? "recheck_indexed" : "recheck_invalid",
+        message: result.statusMessage,
+      });
+    } catch (e) {
+      recheckStats.invalid++;
+      recheckStats.details.push({
+        id,
+        url: existing.url,
+        result: "recheck_invalid",
+        message: `Pipeline error: ${String(e)}`,
+      });
+    }
+  }
+  if (recheckStats.processed > 0) {
+    report.rechecks = recheckStats;
   }
 
   report.queueRemaining = await seedQueueLength();

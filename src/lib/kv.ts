@@ -42,6 +42,15 @@ const ENTRY_PREFIX = "reg:";
 const BY_URL_PREFIX = "reg-by-url:";
 const BY_DOMAIN_PREFIX = "reg-by-domain:";
 const RECENT_KEY = "reg-recent";
+// Phase 2c follow-on 2026-06-06 — Bug B re-probe queue. Sorted
+// set keyed by nextRecheckAt (epoch ms). The /api/registry/seed/
+// probe cron drains entries with score <= now in addition to the
+// new-domain seed queue, so existing indexed entries get
+// re-validated on the cadence set by RECHECK_INTERVAL_DAYS_*
+// at submit/probe time. Before this, nextRecheckAt was written
+// on every entry but never read — so submitted entries stayed
+// frozen forever unless the customer manually resubmitted.
+const RECHECK_KEY = "reg-recheck-due";
 const RATE_IP_PREFIX = "rate:submit:ip:";
 const RATE_URL_PREFIX = "rate:submit:url:";
 // ── Phase 4: claim verification ────────────────────────────
@@ -92,7 +101,57 @@ export async function saveEntry(entry: RegistryEntry): Promise<void> {
   // (immutable per entry).
   const submittedScore = Date.parse(entry.submittedAt) || Date.now();
   pipeline.zadd(RECENT_KEY, { score: submittedScore, member: entry.id });
+  // Phase 2c follow-on — also ZADD to the recheck-due sorted set
+  // keyed by nextRecheckAt. Re-adding an existing member updates
+  // its score, which is exactly what we want when updateEntry
+  // pushes nextRecheckAt forward after a successful revalidation.
+  // Entries with no nextRecheckAt (theoretically shouldn't happen
+  // — submit + probe routes both set it — but defensive) are
+  // skipped here; they just won't get auto-re-validated.
+  if (entry.nextRecheckAt) {
+    const recheckScore = Date.parse(entry.nextRecheckAt);
+    if (Number.isFinite(recheckScore)) {
+      pipeline.zadd(RECHECK_KEY, { score: recheckScore, member: entry.id });
+    }
+  }
   await pipeline.exec();
+}
+
+/** Pop entries whose nextRecheckAt has passed. Atomic-ish:
+ *  ZRANGEBYSCORE to get due ids, then ZREM to clear them so a
+ *  concurrent cron tick (shouldn't happen with Vercel cron, but
+ *  defensive) doesn't pick up the same id twice. Capped at
+ *  `max` ids per call so the cron's overall maxDuration budget
+ *  is respected.
+ *
+ *  Important: removal from the sorted set happens BEFORE
+ *  revalidation runs. If the revalidation succeeds, saveEntry
+ *  (called via updateEntry) re-adds the entry with the new
+ *  nextRecheckAt score. If revalidation FAILS for a transient
+ *  reason (network, registry-side bug), the entry is dropped
+ *  from the recheck queue — it'll still get re-added the next
+ *  time the customer submits via Studio, but won't be
+ *  auto-rechecked again until then. Trade-off accepted for v1:
+ *  a stuck transient error becomes a one-cycle gap, not an
+ *  infinite retry storm. */
+export async function popDueRechecks(max: number): Promise<string[]> {
+  const r = getRedis();
+  const now = Date.now();
+  // Upstash Redis zrange with byScore option returns members
+  // with score in [min, max]. We want everything from earliest
+  // up to and including now.
+  const due = await r.zrange<string[]>(RECHECK_KEY, 0, now, {
+    byScore: true,
+    offset: 0,
+    count: max,
+  });
+  if (!Array.isArray(due) || due.length === 0) return [];
+  // Remove the ids we're about to process. ZREM is variadic but
+  // we pipeline it to keep it as one round-trip.
+  const pipeline = r.pipeline();
+  for (const id of due) pipeline.zrem(RECHECK_KEY, id);
+  await pipeline.exec();
+  return due;
 }
 
 /** Patch fields on an existing entry. Reads the whole entry,
