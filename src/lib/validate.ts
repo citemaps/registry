@@ -25,6 +25,50 @@ const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES   = 1_048_576;  // 1 MB
 const USER_AGENT = "CiteMapsRegistry/0.1 (+https://citemaps.org)";
 
+/** Append a unique cache-busting query parameter to a URL. The
+ *  param name `_citemap_rv` is unlikely to collide with anything
+ *  application-side; the value is the current timestamp.
+ *
+ *  Why this is necessary: a sizable share of customer hosts
+ *  (shared hosting like TigerTech / Bluehost / SiteGround,
+ *  managed-WordPress like WP Engine / Kinsta / Flywheel,
+ *  Cloudflare-in-front-of-anything) cache static JSON responses
+ *  server-side. Default TTLs can be hours. Without a cache-buster
+ *  the registry will validate against whatever the cache is
+ *  pinning — often the customer's PREVIOUS publish, not the
+ *  current one. Symptom: customer re-publishes, registry stays
+ *  pinned to the old hash, lastValidatedAt updates but parsed
+ *  fields don't.
+ *
+ *  Why this works: every caching layer in the chain keys on the
+ *  full request URL including query string. A unique query param
+ *  per request = always a cache miss = always re-fetched from
+ *  origin disk. The static-file server (Apache / nginx / etc.)
+ *  ignores the query string for static paths so the bytes
+ *  returned are identical to what the canonical URL serves.
+ *  Net effect: the customer's caching layer keeps caching what
+ *  it wants for the rest of the internet, but our validator
+ *  always sees the latest published file.
+ *
+ *  Use ONLY for fetches of citemap-bearing URLs the customer
+ *  controls (their own domain + the §1.7 counter-party domains).
+ *  Do NOT use for platform-page fetches (YouTube / Vimeo /
+ *  podcast-host backlink checks) — those URLs are on external
+ *  platforms whose query-string handling varies and may be
+ *  defensive against arbitrary params.
+ */
+function withCacheBuster(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl);
+    u.searchParams.set("_citemap_rv", String(Date.now()));
+    return u.toString();
+  } catch {
+    // Unparseable URL — leave it; the fetch will fail downstream
+    // with a regular bad-URL error, which is the right outcome.
+    return rawUrl;
+  }
+}
+
 // ── v3.3 §1.7 cross-document verification budgets ───────────
 // Per-fetch budget kept tight (8s) since the orchestrator fans
 // out in parallel batches and any one slow counter-party can
@@ -154,19 +198,30 @@ export async function validate(url: string): Promise<ValidationResult> {
     };
   }
 
-  // Fetch with timeout + size cap.
+  // Fetch with timeout + size cap. The canonical `url` stays
+  // unchanged in storage / responses — only the actual outbound
+  // request URL gets the cache-buster (see withCacheBuster
+  // docstring for the customer-host caching rationale).
+  const fetchUrl = withCacheBuster(url);
   let response: Response;
   let body: string;
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
-      response = await fetch(url, {
+      response = await fetch(fetchUrl, {
         method: "GET",
         signal: controller.signal,
         headers: {
           "Accept": "application/json, text/html, application/ld+json",
           "User-Agent": USER_AGENT,
+          // Belt-and-suspenders: explicit no-cache request
+          // headers. Most caching layers honor URL uniqueness
+          // over these headers, but a few proxies (Cloudflare
+          // with certain page-rule configs) also respect
+          // Cache-Control on the request. Cheap insurance.
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache",
         },
         redirect: "follow",
       });
@@ -715,12 +770,19 @@ async function crossFetchCitemap(
   parentSignal.addEventListener("abort", onParentAbort);
 
   try {
-    const response = await fetch(fetchUrl, {
+    // Cache-bust the counter-party fetch too — §1.7 reciprocity
+    // checks against a stale cached version of the counter-party
+    // citemap would mark valid reciprocal edges as unverified
+    // (or vice versa) for hours after a counter-party publishes.
+    // Same rationale as the primary validate() fetch above.
+    const response = await fetch(withCacheBuster(fetchUrl), {
       method: "GET",
       signal: controller.signal,
       headers: {
         "Accept": "application/json, application/ld+json, text/html",
         "User-Agent": USER_AGENT,
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
       },
       redirect: "follow",
     });
