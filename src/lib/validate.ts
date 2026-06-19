@@ -1190,14 +1190,29 @@ function extractMetadata(obj: Record<string, unknown>): ParsedCitemap {
     if (typeof type === "string") out.entityType = type;
   }
 
-  // Verticals — declared either at root or under brand
-  const verticalsRaw = (obj.verticals ?? brand?.verticals ?? []) as unknown;
-  if (Array.isArray(verticalsRaw)) {
-    const vs = verticalsRaw.filter((v): v is string => typeof v === "string");
-    if (vs.length > 0) {
-      out.verticals = vs;
-      out.primaryVertical = vs[0];
+  // Verticals — CANONICAL location is brand.taxonomy.{primaryVertical,
+  // additionalVerticals} (v3.2+ taxonomy object, what the generator emits).
+  // Fall back to the legacy root/brand `verticals[]` array for older citemaps.
+  // (Without the taxonomy path the registry showed "no verticals declared" for
+  // every modern entry — the data was there, just under brand.taxonomy.)
+  const taxonomy = (brand?.taxonomy ?? obj.taxonomy) as Record<string, unknown> | undefined;
+  const taxoVerticals: string[] = [];
+  if (taxonomy) {
+    if (typeof taxonomy.primaryVertical === "string" && taxonomy.primaryVertical) {
+      taxoVerticals.push(taxonomy.primaryVertical);
     }
+    if (Array.isArray(taxonomy.additionalVerticals)) {
+      for (const v of taxonomy.additionalVerticals) if (typeof v === "string" && v) taxoVerticals.push(v);
+    }
+  }
+  const legacyRaw = (obj.verticals ?? brand?.verticals ?? []) as unknown;
+  const legacyVerticals = Array.isArray(legacyRaw)
+    ? legacyRaw.filter((v): v is string => typeof v === "string")
+    : [];
+  const vs = taxoVerticals.length > 0 ? taxoVerticals : legacyVerticals;
+  if (vs.length > 0) {
+    out.verticals = vs;
+    out.primaryVertical = vs[0];
   }
 
   // Module keys — top-level fields that aren't metadata,
@@ -1280,7 +1295,8 @@ function computeCompleteness(obj: Record<string, unknown>): number {
     [isObject(obj.trust)            || isObject(source?.trust),            10],
     [isObject(obj.temporalRecord)   || isObject(source?.temporalRecord),   10],
     [isObject(obj.citationContract),                                       10],
-    [Array.isArray(obj.verticals) && (obj.verticals as unknown[]).length > 0, 5],
+    [(Array.isArray(obj.verticals) && (obj.verticals as unknown[]).length > 0)
+      || (isObject(source?.taxonomy) && typeof (source!.taxonomy as Record<string, unknown>).primaryVertical === "string"), 5],
     [typeof obj.lastUpdated === "string", 5],
     [isObject(source?.team) || Array.isArray(source?.team),                5],
   ];
