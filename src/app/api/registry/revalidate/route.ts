@@ -24,12 +24,15 @@ export const maxDuration = 300;
 const PAGE = 50;
 
 export async function POST(req: NextRequest) {
-  const required = process.env.REGISTRY_SUBMIT_TOKEN;
+  // Mirror /submit's gate exactly (case-insensitive "bearer "), and trim both
+  // sides so stray whitespace/newlines in the env value or header can't cause a
+  // spurious 401.
+  const required = (process.env.REGISTRY_SUBMIT_TOKEN ?? "").trim();
   if (required) {
     const auth = req.headers.get("authorization") ?? "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-    if (token !== required) {
-      return NextResponse.json({ success: false, error: "Unauthorized." }, { status: 401 });
+    const presented = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+    if (presented !== required) {
+      return NextResponse.json({ success: false, error: "Missing or invalid bearer token." }, { status: 401 });
     }
   }
 
