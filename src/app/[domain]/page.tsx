@@ -18,6 +18,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { getEntryByDomain } from "@/lib/kv";
+import { RegistryGraphDetail } from "@/components/RegistryGraphDetail";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -109,6 +110,12 @@ export default async function DomainDetailPage({ params }: PageProps) {
             ))}
           </div>
         </header>
+
+        {entry.parsed?.graph && entry.parsed.graph.nodes.length > 0 && (
+          <div style={{ marginBottom: 32 }}>
+            <RegistryGraphDetail model={entry.parsed.graph} />
+          </div>
+        )}
 
         <div style={{
           display: "grid",

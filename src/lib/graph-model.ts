@@ -18,6 +18,8 @@ export interface RegistryGraphNode {
   type: RegistryGraphNodeType;
   /** Present when this node is a category hub representing `count` members. */
   count?: number;
+  /** Hub members (capped) — for the detail-page hub-expand. */
+  members?: string[];
 }
 
 export interface RegistryGraphModel {
@@ -63,15 +65,29 @@ function primaryCategory(cats: Map<string, string>, fallbackKeys: string[]) {
     return strOf(it, ...fallbackKeys) || "Uncategorized";
   };
 }
-function groupHubs(type: RegistryGraphNodeType, items: Record<string, unknown>[], keyFn: (it: Record<string, unknown>) => string): RegistryGraphNode[] {
-  const buckets = new Map<string, number>();
+const HUB_MEMBER_CAP = 24; // member labels stored per hub (detail-page expand)
+
+function groupHubs(
+  type: RegistryGraphNodeType,
+  items: Record<string, unknown>[],
+  keyFn: (it: Record<string, unknown>) => string,
+  labelKeys: string[],
+): RegistryGraphNode[] {
+  const counts = new Map<string, number>();
+  const members = new Map<string, string[]>();
   for (const it of items) {
     const k = keyFn(it) || "Other";
-    buckets.set(k, (buckets.get(k) ?? 0) + 1);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+    const m = members.get(k) ?? [];
+    if (m.length < HUB_MEMBER_CAP) {
+      const lbl = strOf(it, ...labelKeys);
+      if (lbl) m.push(lbl);
+    }
+    members.set(k, m);
   }
-  return Array.from(buckets.entries())
+  return Array.from(counts.entries())
     .sort((a, b) => b[1] - a[1])
-    .map(([label, count]) => ({ type, label: `${label} (${count})`, count }));
+    .map(([label, count]) => ({ type, label: `${label} (${count})`, count, members: members.get(label) ?? [] }));
 }
 
 export function graphModelFromCitemap(citemap: unknown): RegistryGraphModel | undefined {
@@ -92,7 +108,7 @@ export function graphModelFromCitemap(citemap: unknown): RegistryGraphModel | un
     if (list.length === 0) return;
     counts[type] = list.length;
     if (groupKeyFn && list.length > GROUP_THRESHOLD) {
-      nodes.push(...groupHubs(type, list, groupKeyFn));
+      nodes.push(...groupHubs(type, list, groupKeyFn, labelKeys));
     } else {
       for (const it of list) nodes.push({ type, label: strOf(it, ...labelKeys) || type });
     }
