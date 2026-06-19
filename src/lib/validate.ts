@@ -20,6 +20,7 @@
 import { createHash } from "crypto";
 import { hostOf, isPrivateHost } from "./canonicalize";
 import type { ParsedCitemap, SubmissionFormat } from "./types";
+import { graphModelFromCitemap } from "./graph-model";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES   = 1_048_576;  // 1 MB
@@ -1273,6 +1274,9 @@ function extractMetadata(obj: Record<string, unknown>): ParsedCitemap {
   // Counts presence of high-value fields out of a fixed
   // weighted denominator.
   out.profileCompleteness = computeCompleteness(obj);
+
+  // Compact entity-graph for the per-entry viz (decisions/registry-entity-graph-viz.md).
+  out.graph = graphModelFromCitemap(obj);
 
   return out;
 }

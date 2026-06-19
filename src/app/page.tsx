@@ -18,6 +18,7 @@
 import Link from "next/link";
 import { listRecentIds, getEntriesByIds } from "@/lib/kv";
 import type { RegistryEntry } from "@/lib/types";
+import { RegistryGraph, GraphLegend } from "@/components/RegistryGraph";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -72,9 +73,20 @@ export default async function RegistryIndexPage({ searchParams }: PageProps) {
           {indexed.length === 0 ? (
             <EmptyState page={page} />
           ) : (
-            <div style={{ display: "grid", gap: 12 }}>
-              {indexed.map(entry => <EntryCard key={entry.id} entry={entry} />)}
-            </div>
+            <>
+              <div style={{
+                position: "sticky", top: 0, zIndex: 5, background: "var(--c-bg)",
+                padding: "8px 0 10px", marginBottom: 6, borderBottom: "1px solid var(--c-border)",
+              }}>
+                <GraphLegend />
+              </div>
+              <div style={{
+                display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(248px, 1fr))",
+                gap: 14, alignItems: "stretch",
+              }}>
+                {indexed.map(entry => <EntryCard key={entry.id} entry={entry} />)}
+              </div>
+            </>
           )}
 
           {indexed.length === PAGE_SIZE && (
@@ -196,57 +208,65 @@ function EntryCard({ entry }: { entry: RegistryEntry }) {
   const submittedAgo = formatRelative(entry.submittedAt);
   const verticals = entry.parsed?.verticals ?? [];
   const completeness = entry.parsed?.profileCompleteness ?? null;
+  const graph = entry.parsed?.graph;
 
   return (
     <Link
       href={`/${entry.domain}`}
       style={{
-        display: "block", padding: 20, background: "var(--c-bg-elevated)",
-        border: "1px solid var(--c-border)", borderRadius: 8,
-        borderBottom: "1px solid var(--c-border)", color: "var(--c-text)",
+        display: "flex", flexDirection: "column", gap: 10, padding: 18,
+        background: "var(--c-bg-elevated)", border: "1px solid var(--c-border)",
+        borderRadius: 8, color: "var(--c-text)",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 16 }}>
-        <div style={{ minWidth: 0, flex: 1 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
           <div style={{
             fontSize: 12, color: "var(--c-text-dim)", fontFamily: "var(--font-geist-mono)",
-            marginBottom: 4,
+            marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           }}>
             {entry.domain}
           </div>
           <div style={{
-            fontWeight: 500, fontSize: 17,
+            fontWeight: 500, fontSize: 16,
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           }}>
             {entry.parsed?.entityName ?? entry.domain}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          {completeness !== null && (
-            <CompletenessRing value={completeness} />
-          )}
-          {entry.claimedByEmail && (
-            <span style={{
-              fontSize: 11, fontFamily: "var(--font-geist-mono)",
-              background: "#0f0f0e", color: "#ffffff",
-              padding: "3px 8px", borderRadius: 4,
-              display: "inline-flex", alignItems: "center", gap: 4,
-            }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-              Verified
-            </span>
-          )}
-          <span className="badge badge-indexed">Indexed</span>
-        </div>
+        {completeness !== null && (
+          <div style={{ flexShrink: 0 }}><CompletenessRing value={completeness} /></div>
+        )}
       </div>
 
-      <div style={{
-        display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12,
-        fontSize: 12, color: "var(--c-text-muted)",
-      }}>
-        {verticals.length > 0 ? verticals.slice(0, 4).map(v => (
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <RegistryGraph model={graph} size={148} />
+      </div>
+      <div style={{ fontSize: 11, color: "var(--c-text-muted)", textAlign: "center" }}>
+        {graph
+          ? `${graph.total} node${graph.total === 1 ? "" : "s"}${graph.overflow ? ` · +${graph.overflow} more` : ""}`
+          : "no graph nodes yet"}
+      </div>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {entry.claimedByEmail && (
+          <span style={{
+            fontSize: 11, fontFamily: "var(--font-geist-mono)",
+            background: "#0f0f0e", color: "#ffffff",
+            padding: "3px 8px", borderRadius: 4,
+            display: "inline-flex", alignItems: "center", gap: 4,
+          }}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            Verified
+          </span>
+        )}
+        <span className="badge badge-indexed">Indexed</span>
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, fontSize: 12, color: "var(--c-text-muted)" }}>
+        {verticals.length > 0 ? verticals.slice(0, 3).map(v => (
           <span key={v} style={{
             background: "var(--c-bg-subtle)", padding: "2px 8px",
             borderRadius: 3, fontFamily: "var(--font-geist-mono)",
@@ -262,9 +282,10 @@ function EntryCard({ entry }: { entry: RegistryEntry }) {
             borderRadius: 3, fontFamily: "var(--font-geist-mono)",
           }}>v{entry.parsed.citemapVersion}</span>
         )}
-        <span style={{ marginLeft: "auto", color: "var(--c-text-dim)" }}>
-          submitted {submittedAgo}
-        </span>
+      </div>
+
+      <div style={{ fontSize: 12, color: "var(--c-text-dim)", marginTop: "auto" }}>
+        submitted {submittedAgo}
       </div>
     </Link>
   );

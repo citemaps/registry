@@ -37,9 +37,14 @@ export type SubmissionFormat = "json" | "html" | "unknown";
  *  Populated only when status === "indexed". Renderers and
  *  faceted-search consumers read from this rather than re-parsing
  *  the raw body. */
+import type { RegistryGraphModel } from "./graph-model";
+
 export interface ParsedCitemap {
   /** Spec version declared at the root, e.g. "3.2". */
   citemapVersion?: string;
+  /** Compact entity-graph (nodes + per-type counts) derived from the citemap's
+   *  @graph at validation time, for the per-entry viz. See graph-model.ts. */
+  graph?: RegistryGraphModel;
   /** Display name pulled from brand.name or top-level entity. */
   entityName?: string;
   /** schema.org @type when present (e.g. "Organization",
