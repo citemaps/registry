@@ -23,7 +23,13 @@ import type { ParsedCitemap, SubmissionFormat } from "./types";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES   = 1_048_576;  // 1 MB
-const USER_AGENT = "CiteMapsRegistry/0.1 (+https://citemaps.org)";
+// Real browser UA + trailing CiteMapsRegistry identifier (2026-06-19).
+// Empirically chosen against SiteGround's WAF: a bare bot UA and the
+// Googlebot-style "Mozilla/5.0 (compatible; …Bot…)" pattern both get 403'd;
+// a genuine browser UA passes. Trailing product token keeps us honest +
+// allowlistable by name. Mirror of src/lib/claim.ts — keep in sync.
+const USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CiteMapsRegistry/1.0 (+https://citemaps.org/registry)";
 
 /** Append a unique cache-busting query parameter to a URL. The
  *  param name `_citemap_rv` is unlikely to collide with anything
@@ -214,6 +220,7 @@ export async function validate(url: string): Promise<ValidationResult> {
         signal: controller.signal,
         headers: {
           "Accept": "application/json, text/html, application/ld+json",
+          "Accept-Language": "en-US,en;q=0.9",
           "User-Agent": USER_AGENT,
           // Belt-and-suspenders: explicit no-cache request
           // headers. Most caching layers honor URL uniqueness

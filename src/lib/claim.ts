@@ -17,7 +17,31 @@ import { hostOf, isPrivateHost } from "./canonicalize";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES = 1_048_576;
-const USER_AGENT = "CiteMapsRegistry/0.1 Claim (+https://citemaps.org)";
+// Real browser UA + a trailing CiteMapsRegistry identifier (2026-06-19).
+// Empirically chosen against SiteGround's WAF: a bare bot UA and the
+// Googlebot-style "Mozilla/5.0 (compatible; …Bot…)" pattern both get 403'd
+// (the latter as fake-bot anti-spoofing), but a genuine browser UA passes.
+// The trailing product token keeps us honest + lets publishers allowlist
+// "CiteMapsRegistry" deliberately. Keep the two registry libs in sync.
+const USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CiteMapsRegistry/1.0 (+https://citemaps.org/registry)";
+
+/** WAF / anti-bot block detection. A managed-WP firewall typically answers a
+ *  non-browser fetch with a 403 (or 401/406/429/503), or a 200 HTML
+ *  "challenge" page — not the citemap. Distinguish that from a URL that simply
+ *  isn't a citemap, so we can tell the publisher to allowlist us rather than
+ *  send them chasing a file that's actually fine. */
+function looksLikeFirewallBlock(status: number, contentType: string, body: string): boolean {
+  if (status === 401 || status === 403 || status === 406 || status === 429 || status === 503) return true;
+  if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
+    const b = body.slice(0, 2000).toLowerCase();
+    return /access denied|forbidden|web application firewall|are you human|captcha|security check|cloudflare|attention required|request blocked|bot (?:detection|protection)|sucuri|incapsula|imunify/.test(b);
+  }
+  return false;
+}
+
+const FIREWALL_BLOCK_MESSAGE =
+  "We reached your site, but a security firewall (common on SiteGround and other managed-WordPress hosts) blocked our verification request. Allowlist the registry crawler — its User-Agent contains \"CiteMapsRegistry\" — or temporarily relax bot/WAF protection for /citemap.json, then try claiming again.";
 
 /** Recommended token format per v3.2.1 spec. Other formats
  *  are accepted by the registry but flagged as info-only —
@@ -31,6 +55,7 @@ export type ClaimMatchResult =
       ok: false;
       reason:
         | "unreachable"
+        | "blocked"
         | "not-found"
         | "not-a-citemap"
         | "no-token-in-citemap"
@@ -64,6 +89,7 @@ export async function verifyTokenAtUrl(
         signal: controller.signal,
         headers: {
           "Accept": "application/json, text/html, application/ld+json",
+          "Accept-Language": "en-US,en;q=0.9",
           "User-Agent": USER_AGENT,
         },
         redirect: "follow",
@@ -72,6 +98,11 @@ export async function verifyTokenAtUrl(
       clearTimeout(timeoutId);
     }
     if (!response.ok) {
+      // A firewall/anti-bot block (403 etc.) is NOT a missing file — say so,
+      // so the publisher allowlists us instead of re-checking a fine citemap.
+      if (looksLikeFirewallBlock(response.status, (response.headers.get("content-type") ?? "").toLowerCase(), "")) {
+        return { ok: false, reason: "blocked", message: FIREWALL_BLOCK_MESSAGE };
+      }
       return {
         ok: false,
         reason: "not-found",
@@ -115,6 +146,12 @@ export async function verifyTokenAtUrl(
   }
 
   if (!citemap) {
+    // A 200 HTML "challenge" page (anti-bot interstitial) parses to no citemap
+    // just like a real non-citemap page would — disambiguate so we don't blame
+    // the publisher's (fine) citemap for what's actually a firewall block.
+    if (looksLikeFirewallBlock(response.status, contentType, body)) {
+      return { ok: false, reason: "blocked", message: FIREWALL_BLOCK_MESSAGE };
+    }
     return {
       ok: false,
       reason: "not-a-citemap",
