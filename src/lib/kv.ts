@@ -117,6 +117,23 @@ export async function saveEntry(entry: RegistryEntry): Promise<void> {
   await pipeline.exec();
 }
 
+/** Delete a registry entry and remove it from every index it touches (the
+ *  entry hash, the URL→ID map, the by-domain set, the recent + recheck sorted
+ *  sets). Used by the dedup/prune tool. Returns false if the entry is missing. */
+export async function deleteEntry(id: string): Promise<boolean> {
+  const r = getRedis();
+  const entry = await getEntry(id);
+  if (!entry) return false;
+  const pipeline = r.pipeline();
+  pipeline.del(`${ENTRY_PREFIX}${id}`);
+  pipeline.del(`${BY_URL_PREFIX}${entry.url}`);
+  pipeline.srem(`${BY_DOMAIN_PREFIX}${entry.domain}`, id);
+  pipeline.zrem(RECENT_KEY, id);
+  pipeline.zrem(RECHECK_KEY, id);
+  await pipeline.exec();
+  return true;
+}
+
 /** Pop entries whose nextRecheckAt has passed. Atomic-ish:
  *  ZRANGEBYSCORE to get due ids, then ZREM to clear them so a
  *  concurrent cron tick (shouldn't happen with Vercel cron, but
