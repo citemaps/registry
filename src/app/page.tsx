@@ -19,6 +19,7 @@ import Link from "next/link";
 import { listRecentIds, getEntriesByIds } from "@/lib/kv";
 import type { RegistryEntry } from "@/lib/types";
 import { RegistryGraph, GraphLegend } from "@/components/RegistryGraph";
+import type { RegistryGraphModel } from "@/lib/graph-model";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -204,6 +205,20 @@ function EmptyState({ page }: { page: number }) {
   );
 }
 
+const NODE_SING: Record<string, string> = { person: "person", product: "product", brand: "brand", service: "service", publication: "publication", location: "location", channel: "channel", other: "node" };
+const NODE_PLUR: Record<string, string> = { person: "people", product: "products", brand: "brands", service: "services", publication: "publications", location: "locations", channel: "channels", other: "nodes" };
+const NODE_ORDER = ["person", "product", "brand", "service", "publication", "location", "channel", "other"];
+
+/** "34 products · 1 brand · 1 location" — real item counts (pre-grouping). */
+function graphSummary(graph: RegistryGraphModel): string {
+  const counts = graph.counts as Record<string, number | undefined>;
+  const parts = NODE_ORDER.filter((t) => counts[t]).map((t) => {
+    const c = counts[t] as number;
+    return `${c} ${c === 1 ? NODE_SING[t] : NODE_PLUR[t]}`;
+  });
+  return parts.join(" · ") || `${graph.total} node${graph.total === 1 ? "" : "s"}`;
+}
+
 function EntryCard({ entry }: { entry: RegistryEntry }) {
   const submittedAgo = formatRelative(entry.submittedAt);
   const verticals = entry.parsed?.verticals ?? [];
@@ -242,10 +257,8 @@ function EntryCard({ entry }: { entry: RegistryEntry }) {
       <div style={{ display: "flex", justifyContent: "center" }}>
         <RegistryGraph model={graph} size={148} />
       </div>
-      <div style={{ fontSize: 11, color: "var(--c-text-muted)", textAlign: "center" }}>
-        {graph
-          ? `${graph.total} node${graph.total === 1 ? "" : "s"}${graph.overflow ? ` · +${graph.overflow} more` : ""}`
-          : "no graph nodes yet"}
+      <div style={{ fontSize: 11, color: "var(--c-text-muted)", textAlign: "center", lineHeight: 1.5 }}>
+        {graph ? graphSummary(graph) : "no graph nodes yet"}
       </div>
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>

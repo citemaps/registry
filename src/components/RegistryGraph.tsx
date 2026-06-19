@@ -11,7 +11,7 @@ export function RegistryGraph({ model, size = 140 }: { model?: RegistryGraphMode
   const maxR = size / 2 - 12;
   const nodes = model?.nodes ?? [];
   const N = nodes.length;
-  const dotR = N > 24 ? 2.4 : N > 12 ? 3.0 : 3.6;
+  const baseR = N > 24 ? 2.4 : N > 12 ? 3.0 : 3.6;
   const rings = [0.36, 0.68, 1.0].map((f) => maxR * f);
 
   return (
@@ -31,8 +31,12 @@ export function RegistryGraph({ model, size = 140 }: { model?: RegistryGraphMode
         const x = (cx + r * Math.cos(ang)).toFixed(1);
         const y = (cy + r * Math.sin(ang)).toFixed(1);
         const color = REGISTRY_GRAPH_COLORS[nd.type] ?? REGISTRY_GRAPH_COLORS.other;
+        // Category hubs scale with member count so the graph reads as structure.
+        const dotR = nd.count && nd.count > 1
+          ? Number((baseR + Math.min(2.6, Math.log2(nd.count))).toFixed(1))
+          : baseR;
         return (
-          <g key={`${nd.id}-${i}`}>
+          <g key={`${nd.label}-${i}`}>
             <line x1={cx} y1={cy} x2={x} y2={y} stroke={color} strokeWidth={0.5} opacity={0.3} />
             <circle cx={x} cy={y} r={dotR} fill={color} />
           </g>
@@ -44,7 +48,7 @@ export function RegistryGraph({ model, size = 140 }: { model?: RegistryGraphMode
   );
 }
 
-const LEGEND_TYPES: RegistryGraphNodeType[] = ["person", "product", "brand", "service", "location", "channel"];
+const LEGEND_TYPES: RegistryGraphNodeType[] = ["person", "product", "brand", "service", "publication", "location", "channel"];
 
 /** Thin node-type legend — pinned at the top of the directory so the card
  *  colors are always decodable. */
