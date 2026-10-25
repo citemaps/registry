@@ -262,7 +262,7 @@ function EntryCard({ entry }: { entry: RegistryEntry }) {
       </div>
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {entry.claimedByEmail && (
+        {entry.verification?.state === "verified" && (
           <span style={{
             fontSize: 11, fontFamily: "var(--font-geist-mono)",
             background: "#0f0f0e", color: "#ffffff",

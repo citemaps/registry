@@ -21,6 +21,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEntryByDomain } from "@/lib/kv";
 import type { SubmissionResponse, SubmissionError } from "@/lib/types";
+import { publicVerification } from "@/lib/dns-verify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,13 +62,10 @@ export async function GET(
       // (Next.js dynamic route on the registry's Vercel app).
       // citemaps.org root is the Astro spec site (GitHub Pages).
       registryUrl: `https://api.citemaps.org/${entry.domain}`,
-      ...(entry.claimedByEmail
-        ? {
-            claimed: true,
-            claimedAt: entry.claimedAt,
-            claimedDisplayName: entry.claimedDisplayName,
-          }
-        : {}),
+      // Claimed = the entry has a contact (no badge). Verified = DNS.
+      // Never an email or a name in this response.
+      ...(entry.claimedByEmail ? { claimed: true, claimedAt: entry.claimedAt } : {}),
+      ...publicVerification(entry),
     },
   };
   return NextResponse.json(payload, { status: 200 });

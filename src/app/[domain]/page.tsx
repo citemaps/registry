@@ -18,6 +18,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { getEntryByDomain } from "@/lib/kv";
+import { publicVerification } from "@/lib/dns-verify";
 import { RegistryGraphDetail } from "@/components/RegistryGraphDetail";
 
 export const runtime = "nodejs";
@@ -57,13 +58,12 @@ export default async function DomainDetailPage({ params }: PageProps) {
   const moduleKeys = entry.parsed?.moduleKeys ?? [];
   const version = entry.parsed?.citemapVersion;
   const completeness = entry.parsed?.profileCompleteness ?? null;
-  // Phase 4 verification state — drives the Verified badge in
-  // the header + the Claim CTA / Claimed-by card in the aside.
+  // Verified = DNS record on the entity's domain (live state);
+  // Claimed = the entry has a contact (no badge). Never a name or
+  // an email on this page. decisions/registry-verified-badge-domain-anchored.md
+  const { verified, verification: v } = publicVerification(entry);
   const isClaimed = !!entry.claimedByEmail;
   const canBeClaimed = !isClaimed && !!entry.parsed?.registryToken;
-  const claimDisplay =
-    entry.claimedDisplayName ??
-    (entry.claimedByEmail ? entry.claimedByEmail.split("@")[0] : null);
 
   return (
     <>
@@ -83,8 +83,8 @@ export default async function DomainDetailPage({ params }: PageProps) {
           <h1 style={{ fontSize: 32, marginTop: 4 }}>{name}</h1>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
             <span className="badge badge-indexed">Indexed</span>
-            {isClaimed && (
-              <span style={{
+            {verified && (
+              <span title="Verified by DNS record — proves control of the domain, not legal identity" style={{
                 fontSize: 11, fontFamily: "var(--font-geist-mono)",
                 background: "#0f0f0e", color: "#ffffff",
                 padding: "3px 8px", borderRadius: 4,
@@ -186,22 +186,34 @@ export default async function DomainDetailPage({ params }: PageProps) {
               <SignalRow label="temporal record" present={entry.parsed?.hasTemporalRecord ?? false} />
             </Card>
 
-            {/* Phase 4 — Verification / Claim card */}
-            {isClaimed ? (
-              <Card title="Verified by publisher">
-                {claimDisplay && (
-                  <KvRow label="Claimed by" value={claimDisplay} />
-                )}
-                {entry.claimedAt && (
-                  <KvRow label="Verified" value={formatDate(entry.claimedAt)} />
-                )}
-                <p style={{
-                  fontSize: 11, color: "var(--c-text-muted)",
-                  marginTop: 10, lineHeight: 1.55,
-                }}>
-                  The publisher proved ownership via the registry-token
-                  field in their citemap + a magic-link email confirmation.
+            {/* Verification (DNS) + claim card */}
+            {verified ? (
+              <Card title="Verified by DNS record">
+                {v.recordName && <KvRow label="Record" value={v.recordName} mono />}
+                <KvRow label="First verified" value={formatDate(v.firstVerifiedAt ?? undefined)} />
+                <KvRow label="Last checked" value={formatDate(v.lastCheckedAt ?? undefined)} />
+                <p style={{ fontSize: 11, color: "var(--c-text-muted)", marginTop: 10, lineHeight: 1.55 }}>
+                  {v.registrableDomain ?? entry.domain}&rsquo;s DNS publishes this entry&rsquo;s registry token.
+                  That proves control of the domain — not legal identity.
                 </p>
+              </Card>
+            ) : isClaimed ? (
+              <Card title="Claimed — not yet verified by the domain">
+                {v.platformSubdomain ? (
+                  <p style={{ fontSize: 12, color: "var(--c-text-muted)", margin: 0, lineHeight: 1.55 }}>
+                    {entry.domain} is on a platform subdomain with no DNS access, so it can&rsquo;t carry the Verified badge.
+                  </p>
+                ) : (
+                  <>
+                    <p style={{ fontSize: 12, color: "var(--c-text-muted)", margin: "0 0 8px", lineHeight: 1.55 }}>
+                      Verified needs a DNS TXT record on {v.registrableDomain ?? entry.domain} carrying this entry&rsquo;s registry token
+                      {v.missingSince ? <> (missing since {formatDate(v.missingSince)})</> : null}.
+                    </p>
+                    {v.recordName && <KvRow label="TXT name" value={v.recordName} mono />}
+                    {entry.parsed?.registryToken && <KvRow label="Value" value={entry.parsed.registryToken} mono />}
+                    {v.lastCheckedAt && <KvRow label="Last checked" value={formatDate(v.lastCheckedAt)} />}
+                  </>
+                )}
               </Card>
             ) : canBeClaimed ? (
               <Card title="Claim this entry">
@@ -209,8 +221,8 @@ export default async function DomainDetailPage({ params }: PageProps) {
                   fontSize: 13, color: "var(--c-text)",
                   margin: 0, lineHeight: 1.55,
                 }}>
-                  This citemap publishes a registry token. If you control{" "}
-                  <strong>{entry.domain}</strong>, you can claim this entry.
+                  This citemap publishes a registry token. If you manage{" "}
+                  <strong>{entry.domain}</strong>, claim it to become its contact. The Verified badge comes from a DNS record on the domain.
                 </p>
                 <Link href={`/registry/claim?id=${entry.id}`} style={{
                   display: "inline-block",
@@ -232,10 +244,10 @@ export default async function DomainDetailPage({ params }: PageProps) {
                   fontSize: 12, color: "var(--c-text-muted)",
                   margin: 0, lineHeight: 1.55,
                 }}>
-                  This citemap doesn't include a{" "}
+                  This citemap doesn&rsquo;t include a{" "}
                   <code style={{ fontSize: 11 }}>citationContract.registryToken</code>{" "}
                   yet. Once the publisher adds one (or regenerates from a v3.2.1-aware
-                  producer like CiteMaps Studio), this entry becomes claimable.
+                  producer like CiteMaps Studio), this entry can be claimed and verified.
                 </p>
               </Card>
             )}

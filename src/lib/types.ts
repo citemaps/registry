@@ -194,6 +194,31 @@ export interface RegistryEntry {
    *  email (privacy). Optional; falls back to email's local-part
    *  when absent. */
   claimedDisplayName?: string;
+  // ── Domain verification (DNS) — the Verified badge ─────────
+  // decisions/registry-verified-badge-domain-anchored.md. A live
+  // state recomputed on every check; the claim above is only the
+  // entry's contact and confers no badge.
+  verification?: DomainVerification;
+}
+
+/** Verified = registryToken live in the citemap AND TXT
+ *  `_citemap.{registrableDomain}` carries the same token. */
+export interface DomainVerification {
+  state: "verified" | "unverified";
+  method: "dns";
+  /** PSL registrable domain (acme.com for shop.acme.com). */
+  registrableDomain: string | null;
+  /** `_citemap.{registrableDomain}`; null for platform subdomains. */
+  recordName: string | null;
+  /** Outcome of the last check. "dns-error" keeps the previous state. */
+  result: "found" | "missing" | "mismatch" | "no-token" | "platform-subdomain" | "no-domain" | "dns-error";
+  firstVerifiedAt?: string;
+  lastVerifiedAt?: string;
+  lastCheckedAt: string;
+  /** Set when a verified entry loses its record; cleared when it's back. */
+  missingSince?: string;
+  /** One-time rollout notice to the claim contact (Oct 2026). */
+  rolloutNoticeAt?: string;
 }
 
 /** Pending magic-link claim verification. One row per outstanding
@@ -254,7 +279,20 @@ export interface SubmissionResponse {
      *  *not* leaked — only the boolean + display name. */
     claimed?: boolean;
     claimedAt?: string;
-    claimedDisplayName?: string;
+    /** Domain verification (DNS). No emails or names — ever. */
+    verified?: boolean;
+    verification?: {
+      method: "dns";
+      state: "verified" | "unverified";
+      recordName: string | null;
+      registrableDomain: string | null;
+      platformSubdomain: boolean;
+      result: DomainVerification["result"] | null;
+      firstVerifiedAt: string | null;
+      lastVerifiedAt: string | null;
+      lastCheckedAt: string | null;
+      missingSince: string | null;
+    };
   };
 }
 

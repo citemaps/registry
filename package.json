@@ -15,7 +15,8 @@
     "next": "^16.4.3",
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "resend": "^4.8.0"
+    "resend": "^4.8.0",
+    "tldts": "^6.1.86"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

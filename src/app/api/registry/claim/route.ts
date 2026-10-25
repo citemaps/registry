@@ -128,11 +128,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: "This entry is already claimed. Contact registry@citemaps.org if you believe this is in error.",
+        error: "This entry already has a contact. The Verified badge doesn't depend on the claim — add the DNS TXT record shown on the entry's page to verify the domain.",
         code: "already_claimed",
-        // Tell the caller WHO claimed it (privacy-safe — display
-        // name only; never the email).
-        claimedDisplayName: entry.claimedDisplayName,
         claimedAt: entry.claimedAt,
       },
       { status: 409 },

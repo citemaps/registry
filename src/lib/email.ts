@@ -121,3 +121,54 @@ export async function sendClaimVerify({
     console.log(`[email] Claim verify → ${email} (domain: ${domain})`);
   } catch (e) { console.error("[email] Claim verify failed:", e); }
 }
+
+/** Domain-verification notices to the entry's claim contact:
+ *  "gained" (record found), "lost" (record gone — usually a DNS
+ *  move), "rollout" (Oct 2026: the badge now needs the record). The
+ *  contact owns nothing; this is information only. */
+export async function sendVerificationNotice({
+  email, domain, entityName, kind, recordName, token,
+}: {
+  email: string; domain: string; entityName?: string;
+  kind: "gained" | "lost" | "rollout";
+  recordName: string; token: string;
+}) {
+  const resend = getResend();
+  if (!resend) return;
+  const name = entityName ? `${entityName} (${domain})` : domain;
+  const page = `https://api.citemaps.org/${domain}`;
+  const subject =
+    kind === "gained" ? `${domain} is now Verified on citemaps.org`
+    : kind === "lost" ? `${domain} lost its Verified badge on citemaps.org`
+    : `Action needed to keep ${domain} Verified on citemaps.org`;
+  const intro =
+    kind === "gained" ? `The DNS record for <strong>${name}</strong> checks out — the entry now shows <strong>Verified by DNS record</strong>.`
+    : kind === "lost" ? `We could no longer find the DNS record for <strong>${name}</strong>, so the entry is back to Claimed. This usually happens after a move to a new DNS provider. Add the record again and the badge returns on the next check.`
+    : `The Verified badge on citemaps.org now comes from the domain itself: a DNS TXT record carrying the entry's registry token. <strong>${name}</strong> doesn't have that record yet, so it shows as Claimed until it's added.`;
+  const record = kind === "gained" ? "" : `
+            <div style="${css.databox};padding:0;margin-top:8px;">
+              <div style="${css.row};padding:12px 20px;"><span style="${css.lbl}">Type</span><span style="${css.val}">TXT</span></div>
+              <div style="${css.row};padding:12px 20px;"><span style="${css.lbl}">Name</span><span style="${css.val}">${recordName}</span></div>
+              <div style="${css.row};padding:12px 20px;border-bottom:none;"><span style="${css.lbl}">Value</span><span style="${css.val}">${token}</span></div>
+            </div>
+            <p style="${css.p};margin-top:16px;">Add it at whoever runs DNS for ${domain} (often the domain registrar). Some providers want just <code>_citemap</code> as the name.</p>`;
+  try {
+    await resend.emails.send({
+      from: FROM, to: email, subject,
+      html: `
+        <div style="${css.wrap}">
+          <div style="${css.header}">${logo}</div>
+          <div style="${css.body}">
+            <h1 style="${css.h1}">${kind === "gained" ? "Verified" : kind === "lost" ? "DNS record missing" : "Verify with a DNS record"}</h1>
+            <hr style="${css.rule}">
+            <p style="${css.p}">${intro}</p>
+            ${record}
+            <a href="${page}" style="${css.btn}">View the registry entry →</a>
+            <p style="${css.small};margin-top:24px;">You're receiving this because this address claimed the entry. Verified means control of the domain's DNS — not legal identity.</p>
+          </div>
+          ${footer()}
+        </div>`,
+    });
+    console.log(`[email] Verification ${kind} → ${email} (domain: ${domain})`);
+  } catch (e) { console.error("[email] Verification notice failed:", e); }
+}

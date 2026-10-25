@@ -68,8 +68,8 @@ function mapStatusToView(status: string, domain: string | null, reason: string |
       return {
         heading: "Claim confirmed",
         body: domain
-          ? `You've successfully claimed the citemaps.org registry entry for ${domain}. The Verified badge is now live on the public detail page.`
-          : "You've successfully claimed this citemaps.org registry entry. The Verified badge is now live on its public detail page.",
+          ? `You're now the contact for the citemaps.org registry entry for ${domain}. To show the Verified badge, add the DNS TXT record listed on the entry's page — it's checked automatically.`
+          : "You're now the contact for this citemaps.org registry entry. To show the Verified badge, add the DNS TXT record listed on the entry's page — it's checked automatically.",
         success: true,
         next: domain
           ? { label: `View ${domain} →`, href: `/${domain}` }

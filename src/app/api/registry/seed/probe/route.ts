@@ -33,6 +33,7 @@ import {
 } from "@/lib/kv";
 import { popFromSeedQueue, probeDomain, seedQueueLength } from "@/lib/seed";
 import { validate } from "@/lib/validate";
+import { refreshVerification } from "@/lib/verify-entry";
 import type { RegistryEntry } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -158,6 +159,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
             nextRecheckAt,
             validationCount: (existing.validationCount ?? 0) + 1,
           });
+          await refreshVerification(existingId).catch(() => null);
           if (result.status === "indexed") report.indexed++;
           else report.invalid++;
           report.details.push({
@@ -185,6 +187,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         validationCount: 1,
       };
       await saveEntry(entry);
+      await refreshVerification(entry.id).catch(() => null);
       if (result.status === "indexed") report.indexed++;
       else report.invalid++;
       report.details.push({
@@ -265,6 +268,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         nextRecheckAt,
         validationCount: (existing.validationCount ?? 0) + 1,
       });
+      // Domain verification is a live state — recomputed on every recheck.
+      await refreshVerification(id).catch(() => null);
       if (result.status === "indexed") recheckStats.indexed++;
       else recheckStats.invalid++;
       recheckStats.details.push({

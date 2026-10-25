@@ -88,8 +88,7 @@ function ClaimForm() {
             domain: data.domain,
             entityName: data.parsed?.entityName,
             hasRegistryToken: !!data.parsed?.registryToken,
-            alreadyClaimed: !!data.claimedByEmail,
-            claimedDisplayName: data.claimedDisplayName,
+            alreadyClaimed: !!data.claimed,
           });
           if (data.url) setUrl(data.url);
         }
@@ -146,8 +145,7 @@ function ClaimForm() {
       <main className="container" style={{ paddingTop: 48, paddingBottom: 80, maxWidth: 560 }}>
         <h1 style={{ fontSize: 28, marginBottom: 12 }}>Already claimed</h1>
         <p style={{ color: "var(--c-text-muted)", fontSize: 14, lineHeight: 1.6 }}>
-          This entry has already been claimed
-          {prefill.claimedDisplayName ? <> by <strong>{prefill.claimedDisplayName}</strong></> : null}.
+          This entry already has a contact. The Verified badge doesn&rsquo;t depend on the claim — it comes from a DNS TXT record on the domain.
           If you believe this is in error, contact{" "}
           <a href="mailto:registry@citemaps.org">registry@citemaps.org</a>.
         </p>
@@ -220,23 +218,13 @@ function ClaimForm() {
             style={{ ...inputStyle, fontFamily: "var(--font-geist-mono)" }}
           />
         </Field>
-        <Field label="Your email" hint="We send a one-time confirmation link here. The email is the claim's source of truth.">
+        <Field label="Your email" hint="We send a one-time confirmation link here. This becomes the entry's contact for notices — it's never shown publicly. The Verified badge comes from a DNS record on the domain, not from the claim.">
           <input
             type="email"
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@yourdomain.com"
-            style={inputStyle}
-          />
-        </Field>
-        <Field label="Display name (optional)" hint="Shown on the public detail page as 'Claimed by X'. Defaults to your email's local-part.">
-          <input
-            type="text"
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="e.g. Western Filament, Inc."
-            maxLength={80}
             style={inputStyle}
           />
         </Field>

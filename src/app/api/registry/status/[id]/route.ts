@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEntry } from "@/lib/kv";
 import type { SubmissionResponse, SubmissionError } from "@/lib/types";
+import { publicVerification } from "@/lib/dns-verify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,15 +60,12 @@ export async function GET(
       // Phase 4 claim signals — externally-visible state only.
       // Email is intentionally withheld so this endpoint stays
       // safe to expose anywhere (CORS / Studio polling / public
-      // status badge later). `claimedDisplayName` is fine to leak
-      // since the claimant opted into it being public.
-      ...(entry.claimedByEmail
-        ? {
-            claimed: true,
-            claimedAt: entry.claimedAt,
-            claimedDisplayName: entry.claimedDisplayName,
-          }
-        : {}),
+      // status badge later). Display names are no longer
+      // published either (no personal data in public).
+      // Claimed = the entry has a contact (no badge). Verified = DNS.
+      // Never an email or a name in this response.
+      ...(entry.claimedByEmail ? { claimed: true, claimedAt: entry.claimedAt } : {}),
+      ...publicVerification(entry),
     },
   };
   return NextResponse.json(payload, { status: 200 });

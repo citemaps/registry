@@ -35,6 +35,8 @@
 // is bootstrapping; remove the gate once spam controls mature.
 // ============================================================
 
+import { refreshVerification } from "@/lib/verify-entry";
+import { publicVerification } from "@/lib/dns-verify";
 import { NextRequest, NextResponse } from "next/server";
 import { canonicalizeUrl, hostOf } from "@/lib/canonicalize";
 import {
@@ -57,7 +59,7 @@ import type {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 15;  // validation fetch is bounded at 10s
+export const maxDuration = 30;  // validation fetch (≤10s) + DNS-over-HTTPS check (≤5s per resolver)
 
 const MAX_PER_IP_PER_HOUR  = 10;
 // 2026-06-05: bumped 1 → 10. The 1/hr ceiling was a v0
@@ -199,7 +201,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         nextRecheckAt,
         validationCount: (existing.validationCount ?? 0) + 1,
       });
-      entry = merged ?? existing;
+      entry = (await refreshVerification(existingId)) ?? merged ?? existing;
       return ok(entry);
     }
   }
@@ -222,6 +224,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     validationCount: 1,
   };
   await saveEntry(entry);
+  entry = (await refreshVerification(id)) ?? entry;
   return ok(entry);
 }
 
@@ -244,6 +247,8 @@ function ok(entry: RegistryEntry): NextResponse {
       // /[domain] (Next.js dynamic route at app/[domain]/page.tsx),
       // NOT under /registry/.
       registryUrl: `https://api.citemaps.org/${entry.domain}`,
+      ...(entry.claimedByEmail ? { claimed: true, claimedAt: entry.claimedAt } : {}),
+      ...publicVerification(entry),
     },
   };
   return NextResponse.json(payload, { status: 200 });

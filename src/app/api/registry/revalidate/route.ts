@@ -16,6 +16,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listRecentIds, getEntriesByIds, updateEntry, deleteEntry } from "@/lib/kv";
 import { validate } from "@/lib/validate";
+import { refreshVerification } from "@/lib/verify-entry";
+import { sendVerificationNotice } from "@/lib/email";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +42,11 @@ export async function POST(req: NextRequest) {
   // ?prune=true → after revalidating, collapse duplicate entries per domain to
   // a single best (indexed + has-graph + most complete), deleting the rest.
   const prune = req.nextUrl.searchParams.get("prune") === "true";
+  // ?rollout=true → DNS-verification rollout (Oct 2026): after the DNS
+  // check, every claimed entry that isn't DNS-verified gets ONE notice
+  // with the record to add (stamped verification.rolloutNoticeAt).
+  const rollout = req.nextUrl.searchParams.get("rollout") === "true";
+  let rolloutNotices = 0;
 
   // Collect ids (paged) up to max.
   const ids: string[] = [];
@@ -73,11 +80,23 @@ export async function POST(req: NextRequest) {
         nextRecheckAt: new Date(Date.now() + recheckDays * 86_400_000).toISOString(),
         validationCount: (e.validationCount ?? 0) + 1,
       });
+      // Badge transitions during the rollout get the rollout notice
+      // instead of a "lost" notice, so contacts hear once.
+      const fresh = await refreshVerification(e.id, { notify: !rollout });
+      if (rollout && fresh?.claimedByEmail && fresh.verification && fresh.verification.state !== "verified"
+          && !fresh.verification.rolloutNoticeAt && fresh.verification.recordName && fresh.parsed?.registryToken) {
+        await sendVerificationNotice({
+          email: fresh.claimedByEmail, domain: fresh.domain, entityName: fresh.parsed.entityName,
+          kind: "rollout", recordName: fresh.verification.recordName, token: fresh.parsed.registryToken,
+        });
+        await updateEntry(e.id, { verification: { ...fresh.verification, rolloutNoticeAt: new Date().toISOString() } });
+        rolloutNotices++;
+      }
       revalidated++;
       const before = e.parsed?.graph?.total ?? null;
       const after = r.parsed?.graph?.total ?? null;
       if (before !== after || e.status !== r.status) changed++;
-      items.push({ domain: e.domain, status: r.status, graphNodes: after });
+      items.push({ domain: e.domain, status: r.status, graphNodes: after, verified: fresh?.verification?.state === "verified", dns: fresh?.verification?.result });
       validated.push({
         id: e.id, domain: e.domain, status: r.status,
         hasGraph: !!r.parsed?.graph, completeness: r.parsed?.profileCompleteness ?? 0,
@@ -115,5 +134,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ success: true, total: entries.length, revalidated, changed, failed, pruned, prunedItems, items });
+  return NextResponse.json({ success: true, total: entries.length, revalidated, changed, failed, pruned, prunedItems, rolloutNotices, items });
 }
