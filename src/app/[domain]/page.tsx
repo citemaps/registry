@@ -160,6 +160,9 @@ export default async function DomainDetailPage({ params }: PageProps) {
                 <KvRow label="Last validated" value={formatDate(entry.lastValidatedAt)} />
               )}
               <KvRow label="Validation count" value={String(entry.validationCount ?? 1)} />
+              {entry.lastCheckFailedAt && (
+                <KvRow label="Last check" value={`Couldn't reach the citemap ${formatDate(entry.lastCheckFailedAt)} — still listed`} />
+              )}
               {entry.format && (
                 <KvRow label="Format" value={entry.format} mono />
               )}

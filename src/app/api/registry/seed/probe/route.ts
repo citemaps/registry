@@ -33,6 +33,7 @@ import {
 } from "@/lib/kv";
 import { popFromSeedQueue, probeDomain, seedQueueLength } from "@/lib/seed";
 import { validate } from "@/lib/validate";
+import { applyValidation } from "@/lib/recheck";
 import { refreshVerification } from "@/lib/verify-entry";
 import type { RegistryEntry } from "@/lib/types";
 
@@ -150,15 +151,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       if (existingId) {
         const existing = await getEntry(existingId);
         if (existing) {
-          await updateEntry(existingId, {
-            format: result.format,
-            status: result.status,
-            statusMessage: result.statusMessage,
-            parsed: result.parsed,
-            lastValidatedAt: now,
-            nextRecheckAt,
-            validationCount: (existing.validationCount ?? 0) + 1,
-          });
+          await updateEntry(existingId, applyValidation(existing, result, { now, nextRecheckAt }).patch);
           await refreshVerification(existingId).catch(() => null);
           if (result.status === "indexed") report.indexed++;
           else report.invalid++;
@@ -259,15 +252,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         ? RECHECK_INTERVAL_DAYS_INDEXED
         : RECHECK_INTERVAL_DAYS_INVALID;
       const nextRecheckAt = new Date(Date.now() + recheckDays * 86_400_000).toISOString();
-      await updateEntry(id, {
-        format: result.format,
-        status: result.status,
-        statusMessage: result.statusMessage,
-        parsed: result.parsed,
-        lastValidatedAt: now,
-        nextRecheckAt,
-        validationCount: (existing.validationCount ?? 0) + 1,
-      });
+      const applied = applyValidation(existing, result, { now, nextRecheckAt });
+      await updateEntry(id, applied.patch);
       // Domain verification is a live state — recomputed on every recheck.
       await refreshVerification(id).catch(() => null);
       if (result.status === "indexed") recheckStats.indexed++;
@@ -275,8 +261,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       recheckStats.details.push({
         id,
         url: existing.url,
-        result: result.status === "indexed" ? "recheck_indexed" : "recheck_invalid",
-        message: result.statusMessage,
+        result: result.status === "indexed" || applied.kept ? "recheck_indexed" : "recheck_invalid",
+        message: applied.kept ? `still listed (failure ${applied.patch.consecutiveFailures}): ${result.statusMessage}` : result.statusMessage,
       });
     } catch (e) {
       recheckStats.invalid++;

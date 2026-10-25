@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listRecentIds, getEntriesByIds, updateEntry, deleteEntry } from "@/lib/kv";
 import { validate } from "@/lib/validate";
+import { applyValidation } from "@/lib/recheck";
 import { refreshVerification } from "@/lib/verify-entry";
 import { sendVerificationNotice } from "@/lib/email";
 
@@ -71,15 +72,8 @@ export async function POST(req: NextRequest) {
       const r = await validate(e.url);
       const now = new Date().toISOString();
       const recheckDays = r.status === "indexed" ? 30 : 7;
-      await updateEntry(e.id, {
-        format: r.format,
-        status: r.status,
-        statusMessage: r.statusMessage,
-        parsed: r.parsed,
-        lastValidatedAt: now,
-        nextRecheckAt: new Date(Date.now() + recheckDays * 86_400_000).toISOString(),
-        validationCount: (e.validationCount ?? 0) + 1,
-      });
+      const applied = applyValidation(e, r, { now, nextRecheckAt: new Date(Date.now() + recheckDays * 86_400_000).toISOString() });
+      await updateEntry(e.id, applied.patch);
       // Badge transitions during the rollout get the rollout notice
       // instead of a "lost" notice, so contacts hear once.
       const fresh = await refreshVerification(e.id, { notify: !rollout });
@@ -94,12 +88,16 @@ export async function POST(req: NextRequest) {
       }
       revalidated++;
       const before = e.parsed?.graph?.total ?? null;
-      const after = r.parsed?.graph?.total ?? null;
-      if (before !== after || e.status !== r.status) changed++;
-      items.push({ domain: e.domain, status: r.status, graphNodes: after, verified: fresh?.verification?.state === "verified", dns: fresh?.verification?.result });
+      const after = (applied.kept ? e.parsed : r.parsed)?.graph?.total ?? null;
+      if (before !== after || e.status !== (fresh?.status ?? r.status)) changed++;
+      items.push({
+        domain: e.domain, status: fresh?.status ?? r.status, graphNodes: after,
+        verified: fresh?.verification?.state === "verified", dns: fresh?.verification?.result,
+        ...(r.status !== "indexed" ? { message: r.statusMessage, failureKind: r.failureKind, keptListed: applied.kept, consecutiveFailures: applied.patch.consecutiveFailures } : {}),
+      });
       validated.push({
-        id: e.id, domain: e.domain, status: r.status,
-        hasGraph: !!r.parsed?.graph, completeness: r.parsed?.profileCompleteness ?? 0,
+        id: e.id, domain: e.domain, status: applied.kept ? e.status : r.status,
+        hasGraph: !!(applied.kept ? e.parsed : r.parsed)?.graph, completeness: (applied.kept ? e.parsed : r.parsed)?.profileCompleteness ?? 0,
         validatedMs: Date.now(),
       });
     } catch (err) {

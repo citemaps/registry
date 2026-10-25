@@ -49,6 +49,7 @@ import {
   updateEntry,
 } from "@/lib/kv";
 import { validate } from "@/lib/validate";
+import { applyValidation } from "@/lib/recheck";
 import type {
   IntakeSource,
   RegistryEntry,
@@ -192,15 +193,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // Shouldn't happen — index pointed to a missing entry.
       // Fall through to insert path.
     } else {
-      const merged = await updateEntry(existingId, {
-        format: result.format,
-        status: result.status,
-        statusMessage: result.statusMessage,
-        parsed: result.parsed,
-        lastValidatedAt: now,
-        nextRecheckAt,
-        validationCount: (existing.validationCount ?? 0) + 1,
-      });
+      const { patch } = applyValidation(existing, result, { now, nextRecheckAt });
+      const merged = await updateEntry(existingId, patch);
       entry = (await refreshVerification(existingId)) ?? merged ?? existing;
       return ok(entry);
     }

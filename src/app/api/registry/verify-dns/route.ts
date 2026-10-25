@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { canonicalizeUrl } from "@/lib/canonicalize";
 import { bumpIpRate, bumpUrlRate, findIdByUrl, getEntryByDomain, updateEntry, getEntry } from "@/lib/kv";
 import { validate } from "@/lib/validate";
+import { applyValidation } from "@/lib/recheck";
 import { refreshVerification } from "@/lib/verify-entry";
 import { publicVerification } from "@/lib/dns-verify";
 
@@ -47,10 +48,7 @@ export async function POST(req: NextRequest) {
 
   // Fresh token first: Verified needs the token live in the citemap.
   const r = await validate(entry.url);
-  await updateEntry(id, {
-    format: r.format, status: r.status, statusMessage: r.statusMessage, parsed: r.parsed,
-    lastValidatedAt: new Date().toISOString(), validationCount: (entry.validationCount ?? 0) + 1,
-  });
+  await updateEntry(id, applyValidation(entry, r, { now: new Date().toISOString() }).patch);
   const fresh = await refreshVerification(id);
   if (!fresh) return NextResponse.json({ success: false, error: "Registry entry missing." }, { status: 500 });
 

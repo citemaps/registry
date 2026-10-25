@@ -199,6 +199,16 @@ export interface RegistryEntry {
   // state recomputed on every check; the claim above is only the
   // entry's contact and confers no badge.
   verification?: DomainVerification;
+  // ── Recheck resilience (Oct 2026) ──────────────────────────
+  // A listed entry stays listed when a recheck can't reach the site
+  // (firewall, outage); it's marked invalid only after
+  // UNREACHABLE_GRACE_CHECKS failures in a row, or at once on a real
+  // content problem (404, broken JSON, not a citemap). See lib/recheck.ts.
+  /** Consecutive failed checks (reset by a successful one). */
+  consecutiveFailures?: number;
+  /** Message from the last failed check, while the entry is still listed. */
+  lastCheckError?: string;
+  lastCheckFailedAt?: string;
 }
 
 /** Verified = registryToken live in the citemap AND TXT

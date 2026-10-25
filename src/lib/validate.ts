@@ -188,6 +188,19 @@ export interface ValidationResult {
   status: "indexed" | "invalid" | "timeout" | "blocked";
   statusMessage?: string;
   parsed?: ParsedCitemap;
+  /** Why a non-indexed result failed. "unreachable" = we couldn't get
+   *  a real answer from the site (timeout, connection dropped, 401/403/
+   *  429/5xx, firewall challenge page) — says nothing about the citemap,
+   *  so rechecks keep a listed entry listed for a while (lib/recheck.ts).
+   *  "content" = the site answered and the citemap is gone or broken
+   *  (404/410, bad JSON, not a citemap, shape error). */
+  failureKind?: "unreachable" | "content";
+}
+
+/** Firewall / anti-bot challenge page served instead of the file. */
+function looksLikeChallengePage(body: string): boolean {
+  const b = body.slice(0, 2000).toLowerCase();
+  return /access denied|forbidden|web application firewall|are you human|captcha|security check|attention required|request blocked|bot (?:detection|protection)|sucuri|incapsula|imunify|sgcaptcha|just a moment/.test(b);
 }
 
 /** Run validation against one URL. Pure async function; no I/O
@@ -253,6 +266,7 @@ export async function validate(url: string): Promise<ValidationResult> {
         format: "unknown",
         status: "invalid",
         statusMessage: msg,
+        failureKind: s === 404 || s === 410 ? "content" : "unreachable",
       };
     }
     body = await readBodyCapped(response);
@@ -264,13 +278,15 @@ export async function validate(url: string): Promise<ValidationResult> {
         format: "unknown",
         status: "timeout",
         statusMessage: `Took longer than ${FETCH_TIMEOUT_MS / 1000} seconds to respond. The server may be slow or unreachable.`,
+        failureKind: "unreachable",
       };
     }
     return {
       ok: false,
       format: "unknown",
       status: "invalid",
-      statusMessage: "Couldn't connect to this URL. Check that the domain is reachable from the public internet.",
+      statusMessage: "Couldn't connect to this URL — the server closed the connection or couldn't be reached. Managed-WordPress firewalls (e.g. SiteGround) sometimes drop requests from servers; allowlist the \"CiteMapsRegistry\" user agent for /citemap.json.",
+      failureKind: "unreachable",
     };
   }
 
@@ -299,16 +315,24 @@ export async function validate(url: string): Promise<ValidationResult> {
         format,
         status: "invalid",
         statusMessage: "File found but it's not valid JSON. The file may be corrupted or misnamed.",
+        failureKind: "content",
       };
     }
   } else if (format === "html") {
     citemapJson = extractCitemapFromHtml(body);
     if (!citemapJson) {
+      if (looksLikeChallengePage(body)) {
+        return {
+          ok: false, format, status: "invalid", failureKind: "unreachable",
+          statusMessage: "A security firewall answered instead of the citemap (a challenge / access-denied page). Allowlist the \"CiteMapsRegistry\" user agent for /citemap.json.",
+        };
+      }
       return {
         ok: false,
         format,
         status: "invalid",
         statusMessage: "Found a page at this URL but no citemap was embedded in it. Make sure the page contains the HTML companion you generated.",
+        failureKind: "content",
       };
     }
   } else {
@@ -317,6 +341,7 @@ export async function validate(url: string): Promise<ValidationResult> {
       format,
       status: "invalid",
       statusMessage: "Couldn't detect the file format — expected JSON or HTML.",
+      failureKind: "content",
     };
   }
 
@@ -328,6 +353,7 @@ export async function validate(url: string): Promise<ValidationResult> {
       format,
       status: "invalid",
       statusMessage: shapeError,
+      failureKind: "content",
     };
   }
 
