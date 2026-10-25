@@ -189,7 +189,7 @@ export default async function DomainDetailPage({ params }: PageProps) {
             {/* Verification (DNS) + claim card */}
             {verified ? (
               <Card title="Verified by DNS record">
-                {v.recordName && <KvRow label="Record" value={v.recordName} mono />}
+                {v.recordName && <KvRow label="Record" value={<>_citemap.<wbr />{v.registrableDomain}</>} mono breakAll={false} />}
                 <KvRow label="First verified" value={formatDate(v.firstVerifiedAt ?? undefined)} />
                 <KvRow label="Last checked" value={formatDate(v.lastCheckedAt ?? undefined)} />
                 <p style={{ fontSize: 11, color: "var(--c-text-muted)", marginTop: 10, lineHeight: 1.55 }}>
@@ -209,7 +209,7 @@ export default async function DomainDetailPage({ params }: PageProps) {
                       Verified needs a DNS TXT record on {v.registrableDomain ?? entry.domain} carrying this entry&rsquo;s registry token
                       {v.missingSince ? <> (missing since {formatDate(v.missingSince)})</> : null}.
                     </p>
-                    {v.recordName && <KvRow label="TXT name" value={v.recordName} mono />}
+                    {v.recordName && <KvRow label="TXT name" value={<>_citemap.<wbr />{v.registrableDomain}</>} mono breakAll={false} />}
                     {entry.parsed?.registryToken && <KvRow label="Value" value={entry.parsed.registryToken} mono />}
                     {v.lastCheckedAt && <KvRow label="Last checked" value={formatDate(v.lastCheckedAt)} />}
                   </>
@@ -318,7 +318,7 @@ function SiteFooter({ domain }: { domain: string }) {
           <p style={{ fontSize: 13, color: "var(--c-text-muted)", marginBottom: 12 }}>
             Fetch this entry's full registry record as JSON:
           </p>
-          <pre style={{ fontSize: 12 }}>{`curl https://api.citemaps.org/api/registry/status/{id}`}</pre>
+          <pre style={{ fontSize: 12 }}>{`curl https://api.citemaps.org/api/registry/status-by-domain/${domain}`}</pre>
         </div>
         <div style={{
           display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -352,7 +352,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
-function KvRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+function KvRow({ label, value, mono = false, breakAll = true }: { label: string; value: React.ReactNode; mono?: boolean; breakAll?: boolean }) {
   return (
     <div style={{
       display: "flex", justifyContent: "space-between", gap: 12,
@@ -363,7 +363,7 @@ function KvRow({ label, value, mono = false }: { label: string; value: string; m
       <span style={{
         color: "var(--c-text)", textAlign: "right",
         fontFamily: mono ? "var(--font-geist-mono)" : "inherit",
-        wordBreak: "break-all",
+        wordBreak: breakAll ? "break-all" : "normal",
       }}>{value}</span>
     </div>
   );
