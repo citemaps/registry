@@ -33,10 +33,15 @@
 //   - Per IP: 10/hour
 //   - Per URL: 1/hour (anti-resubmit-spam)
 //
-// Auth (v0, optional): when REGISTRY_SUBMIT_TOKEN env is set,
-// the route requires Authorization: Bearer {token}. Studio
-// passes this from its own env var. Useful while the registry
-// is bootstrapping; remove the gate once spam controls mature.
+// Auth: open to anyone (the homepage promises public submission).
+// A caller presenting Authorization: Bearer {REGISTRY_SUBMIT_TOKEN}
+// is a trusted producer (Studio, ops scripts): no rate limits, may
+// set `source`, may send `content`. A wrong bearer is refused (a
+// misconfigured producer should fail loudly, not silently drop to
+// anonymous). Anonymous callers get the rate limits, source
+// "manual_api", and no `content` — validation of the live URL is
+// their only path. (Was: bearer required whenever the env was set,
+// which locked the public out — Oct 25.)
 // ============================================================
 
 import { refreshVerification } from "@/lib/verify-entry";
@@ -109,13 +114,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // full rate-limit ceiling applies.
   const requiredToken = process.env.REGISTRY_SUBMIT_TOKEN;
   let trusted = false;
-  if (requiredToken) {
-    const auth = req.headers.get("authorization") ?? "";
-    const presented = auth.toLowerCase().startsWith("bearer ")
-      ? auth.slice(7).trim()
-      : "";
-    if (presented !== requiredToken) {
-      return err(401, { success: false, error: "Missing or invalid bearer token.", code: "unauthorized" });
+  const auth = req.headers.get("authorization") ?? "";
+  if (auth) {
+    const presented = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+    if (!requiredToken || presented !== requiredToken) {
+      return err(401, { success: false, error: "Invalid bearer token. Leave out the Authorization header to submit publicly.", code: "unauthorized" });
     }
     trusted = true;
   }
@@ -141,7 +144,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return err(400, { success: false, error: "Could not extract host from URL.", code: "bad_url" });
   }
 
-  const source: IntakeSource = body.source && VALID_INTAKE_SOURCES.has(body.source)
+  const source: IntakeSource = trusted && body.source && VALID_INTAKE_SOURCES.has(body.source)
     ? body.source
     : "manual_api";
 
