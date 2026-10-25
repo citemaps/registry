@@ -11,7 +11,15 @@ export async function refreshVerification(id: string, opts: { notify?: boolean }
   const entry = await getEntry(id);
   if (!entry) return null;
   const { verification, transition } = await checkVerification(entry);
-  const merged = await updateEntry(id, { verification });
+  let merged = await updateEntry(id, { verification });
+  // A pushed entry is listed only on the DNS record's say-so.
+  if (merged && merged.contentSource === "pushed" && merged.status === "indexed"
+      && verification.state !== "verified" && verification.result !== "dns-error") {
+    merged = await updateEntry(id, {
+      status: "invalid",
+      statusMessage: `Listed from content submitted by the publisher's tool (the site can't be reached by the registry); the ${verification.recordName ?? "_citemap"} DNS record no longer matches, so it's unlisted until the record is back.`,
+    });
+  }
   if ((opts.notify ?? true) && transition && entry.claimedByEmail && verification.recordName) {
     await sendVerificationNotice({
       email: entry.claimedByEmail,

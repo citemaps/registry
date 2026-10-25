@@ -125,6 +125,8 @@ export function publicVerification(entry: RegistryEntry) {
   const rd = v?.registrableDomain ?? registrableDomainOf(entry.domain).domain;
   const platform = v?.result === "platform-subdomain" || registrableDomainOf(entry.domain).platform;
   return {
+    contentSource: entry.contentSource ?? "fetched",
+    ...(entry.contentSource === "pushed" && entry.pushedAt ? { pushedAt: entry.pushedAt } : {}),
     verified: v?.state === "verified",
     verification: {
       method: "dns" as const,

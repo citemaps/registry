@@ -27,18 +27,24 @@ export function applyValidation(
         format: result.format, status: result.status, statusMessage: undefined, parsed: result.parsed,
         lastValidatedAt: opts.now, validationCount: (existing.validationCount ?? 0) + 1,
         consecutiveFailures: 0, lastCheckError: undefined, lastCheckFailedAt: undefined,
+        contentSource: "fetched", pushedAt: undefined,
         ...(opts.nextRecheckAt ? { nextRecheckAt: opts.nextRecheckAt } : {}),
       },
     };
   }
   const failures = (existing.consecutiveFailures ?? 0) + 1;
-  const grace = existing.status === "indexed" && result.failureKind !== "content" && failures < UNREACHABLE_GRACE_CHECKS;
+  // Pushed entries exist because the site can't be reached — an
+  // unreachable recheck is expected, not a strike. They stay listed while
+  // the DNS record matches (enforced in verify-entry.ts) and refresh on
+  // the next producer submission.
+  const pushedKeep = existing.status === "indexed" && existing.contentSource === "pushed" && result.failureKind !== "content";
+  const grace = pushedKeep || (existing.status === "indexed" && result.failureKind !== "content" && failures < UNREACHABLE_GRACE_CHECKS);
   if (grace) {
     // Keep it listed with its last good data; record the failure.
     return {
       kept: true,
       patch: {
-        consecutiveFailures: failures, lastCheckError: result.statusMessage, lastCheckFailedAt: opts.now,
+        consecutiveFailures: pushedKeep ? 0 : failures, lastCheckError: result.statusMessage, lastCheckFailedAt: opts.now,
         ...(opts.nextRecheckAt ? { nextRecheckAt: opts.nextRecheckAt } : {}),
       },
     };

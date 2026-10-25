@@ -345,6 +345,13 @@ export async function validate(url: string): Promise<ValidationResult> {
     };
   }
 
+  return validateObject(citemapJson, format);
+}
+
+/** Shape-check + extract metadata for an already-parsed citemap — the
+ *  part of validate() after the fetch. Also used for content a producer
+ *  submits directly when the site can't be reached (lib/pushed.ts). */
+export async function validateObject(citemapJson: Record<string, unknown>, format: SubmissionFormat): Promise<ValidationResult> {
   // Validate the parsed payload shape.
   const shapeError = validateCitemapShape(citemapJson);
   if (shapeError) {

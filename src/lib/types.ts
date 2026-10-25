@@ -209,6 +209,11 @@ export interface RegistryEntry {
   /** Message from the last failed check, while the entry is still listed. */
   lastCheckError?: string;
   lastCheckFailedAt?: string;
+  /** Where the indexed content came from: fetched from the site, or
+   *  submitted by an authenticated producer because the site couldn't
+   *  be reached (listed only while the DNS record matches). */
+  contentSource?: "fetched" | "pushed";
+  pushedAt?: string;
 }
 
 /** Verified = registryToken live in the citemap AND TXT
@@ -263,6 +268,10 @@ export interface SubmissionRequest {
   /** Optional submitter email. Stored opaquely; not surfaced
    *  publicly until Phase 4 verification. */
   submittedBy?: string;
+  /** Producer-submitted citemap content (authenticated producers only).
+   *  Used only when the site can't be reached AND the content's
+   *  registryToken matches the `_citemap` DNS record. See lib/pushed.ts. */
+  content?: Record<string, unknown>;
 }
 
 /** Response shape for POST /api/registry/submit + GET
@@ -289,6 +298,10 @@ export interface SubmissionResponse {
      *  *not* leaked — only the boolean + display name. */
     claimed?: boolean;
     claimedAt?: string;
+    /** "pushed" = content submitted by the publisher's tool because the
+     *  site couldn't be reached (listed on the DNS record's say-so). */
+    contentSource?: "fetched" | "pushed";
+    pushedAt?: string;
     /** Domain verification (DNS). No emails or names — ever. */
     verified?: boolean;
     verification?: {

@@ -11,6 +11,10 @@
 //     url: string,                  // required
 //     source?: IntakeSource,        // defaults to "manual_api"
 //     submittedBy?: string,         // optional email
+//     content?: object,             // trusted producers only — the citemap
+//                                   // itself, used when the site can't be
+//                                   // reached AND its registryToken matches
+//                                   // the _citemap DNS record (lib/pushed.ts)
 //   }
 //
 // Response 200 — success path:
@@ -48,7 +52,8 @@ import {
   saveEntry,
   updateEntry,
 } from "@/lib/kv";
-import { validate } from "@/lib/validate";
+import { validate, type ValidationResult } from "@/lib/validate";
+import { evaluatePushedContent } from "@/lib/pushed";
 import { applyValidation } from "@/lib/recheck";
 import type {
   IntakeSource,
@@ -174,7 +179,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // Run validation BEFORE persisting so the entry lands in its
   // terminal state on first write. Inline for v0; Phase 5 splits
   // this off into a queue.
-  const result = await validate(canonical);
+  let result: ValidationResult = await validate(canonical);
+
+  // Pushed content: the registry couldn't reach the site (firewall,
+  // bot protection), so an authenticated producer's copy stands in —
+  // only when the domain's _citemap DNS record vouches for its token.
+  let pushed = false;
+  if (trusted && body.content && result.status !== "indexed" && result.failureKind === "unreachable") {
+    const p = await evaluatePushedContent(domain, body.content);
+    if (p.ok) { result = p.result; pushed = true; }
+    else result = { ...result, statusMessage: `${result.statusMessage ?? "The site couldn't be reached."} ${p.message}` };
+  }
+  const sourcePatch: Partial<RegistryEntry> = pushed
+    ? { contentSource: "pushed", pushedAt: now }
+    : result.status === "indexed" ? { contentSource: "fetched", pushedAt: undefined } : {};
 
   // Compute next-recheck cadence based on validation outcome.
   const recheckDays = result.status === "indexed"
@@ -194,7 +212,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       // Fall through to insert path.
     } else {
       const { patch } = applyValidation(existing, result, { now, nextRecheckAt });
-      const merged = await updateEntry(existingId, patch);
+      const merged = await updateEntry(existingId, { ...patch, ...sourcePatch });
       entry = (await refreshVerification(existingId)) ?? merged ?? existing;
       return ok(entry);
     }
@@ -216,6 +234,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     lastValidatedAt: now,
     nextRecheckAt,
     validationCount: 1,
+    ...sourcePatch,
   };
   await saveEntry(entry);
   entry = (await refreshVerification(id)) ?? entry;

@@ -160,7 +160,10 @@ export default async function DomainDetailPage({ params }: PageProps) {
                 <KvRow label="Last validated" value={formatDate(entry.lastValidatedAt)} />
               )}
               <KvRow label="Validation count" value={String(entry.validationCount ?? 1)} />
-              {entry.lastCheckFailedAt && (
+              {entry.contentSource === "pushed" && (
+                <KvRow label="Content" value={`Submitted by the publisher's tool ${formatDate(entry.pushedAt)} — the registry can't reach the site, so the domain's DNS record vouches for this copy`} />
+              )}
+              {entry.lastCheckFailedAt && entry.contentSource !== "pushed" && (
                 <KvRow label="Last check" value={`Couldn't reach the citemap ${formatDate(entry.lastCheckFailedAt)} — still listed`} />
               )}
               {entry.format && (
