@@ -76,6 +76,10 @@ export interface ParsedCitemap {
   /** Profile-completeness score 0-100. Heuristic computed at
    *  validation time. */
   profileCompleteness?: number;
+  /** v3.5 §9 citemap level computed by the registry (0 = Level 1 not met). */
+  citemapLevel?: 0 | 1 | 2 | 3;
+  /** The level the citemap itself claims (`citemapLevel`), when set. */
+  claimedLevel?: number;
   /** SHA1 hash of the canonical body. Used by re-validation to
    *  detect "nothing changed" vs. "publisher updated, re-index". */
   rawHash?: string;

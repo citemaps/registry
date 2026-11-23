@@ -173,6 +173,21 @@ export default async function DomainDetailPage({ params }: PageProps) {
           </section>
 
           <aside style={{ display: "grid", gap: 24 }}>
+            {typeof entry.parsed?.citemapLevel === "number" && (
+              <Card title="Citemap level">
+                <div style={{ fontSize: 22, fontWeight: 600 }}>
+                  {entry.parsed.citemapLevel === 0 ? "Not yet Level 1" : `Level ${entry.parsed.citemapLevel} of 3`}
+                </div>
+                {typeof entry.parsed.claimedLevel === "number" && entry.parsed.claimedLevel !== entry.parsed.citemapLevel && (
+                  <KvRow label="File claims" value={`Level ${entry.parsed.claimedLevel}`} />
+                )}
+                <p style={{ fontSize: 12, color: "var(--c-text-muted)", marginTop: 12, lineHeight: 1.5 }}>
+                  Level 1: identity and a contact point. Level 2: says how to name and describe
+                  the entity, and answers questions in its own words. Level 3: a registered
+                  identifier anyone can look up. Computed from the citemap itself (spec v3.5 §9).
+                </p>
+              </Card>
+            )}
             {completeness !== null && (
               <Card title="Completeness">
                 <CompletenessRingLarge value={completeness} />

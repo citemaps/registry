@@ -22,6 +22,7 @@ import { createHash } from "crypto";
 import { hostOf, isPrivateHost } from "./canonicalize";
 import type { ParsedCitemap, SubmissionFormat } from "./types";
 import { graphModelFromCitemap } from "./graph-model";
+import { normalizeEdgeType, computeCitemapLevel } from "./spec-v35";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES   = 1_048_576;  // 1 MB
@@ -100,7 +101,8 @@ const MAX_PARALLEL_FETCHES     = 8;
 // MediaChannel @graph node's `url` field (the actual platform
 // URL, e.g. https://youtube.com/@entitygraph) and confirm it
 // backlinks to the primary entity's domain. Opus 4.8 addendum §4.
-const CHANNEL_OF_TYPE = "https://citemaps.org/ext/v1/types/channelOf";
+// v3.5 §3.2: compared by short name, so both "channelOf" and the ext URL match.
+const CHANNEL_OF_TYPE = "channelOf";
 // Tighter per-fetch budget than cross-doc since platform HTML
 // pages (YouTube about-tab + similar) are typically larger than
 // citemap.json + slower to render. 6s keeps the channelOf pass
@@ -151,6 +153,10 @@ const INVERSE_EDGE_TYPES: Record<string, string[]> = {
   successorOf:          ["predecessorOf"],
   // operatesAs handled separately — auto-verified self-edge
   sellsAt:              [],
+  // ── v3.5 §3.1 business relationships (§7.4 two-sided) ──
+  client:               ["agency"],
+  agency:               ["client"],
+  partner:              ["partner"],
 };
 
 /** v3.3 §1.6 inline-mirror schema.org property map.
@@ -481,7 +487,7 @@ async function verifyCrossDocumentEdges(
     const r = rel as Record<string, unknown>;
     const from = r.from;
     const to = r.to;
-    const type = r.type;
+    const type = typeof r.type === "string" ? normalizeEdgeType(r.type) : r.type;
     if (typeof from !== "string" || typeof to !== "string" || typeof type !== "string") {
       continue;
     }
@@ -648,7 +654,7 @@ async function verifyChannelOwnership(
   for (const rel of rels) {
     if (!rel || typeof rel !== "object") continue;
     const r = rel as Record<string, unknown>;
-    if (r.type !== CHANNEL_OF_TYPE) continue;
+    if (typeof r.type !== "string" || normalizeEdgeType(r.type) !== CHANNEL_OF_TYPE) continue;
     const from = typeof r.from === "string" ? r.from : "";
     if (!from) continue;
     const channelNode = nodeById.get(from);
@@ -897,7 +903,7 @@ function findInverseEdge(
       if (!rel || typeof rel !== "object") continue;
       const r = rel as Record<string, unknown>;
       const to = r.to;
-      const type = r.type;
+      const type = typeof r.type === "string" ? normalizeEdgeType(r.type) : r.type;
       if (typeof to !== "string" || typeof type !== "string") continue;
       if (to === ourPrimaryId && inverses.includes(type)) return true;
     }
@@ -1280,7 +1286,7 @@ function extractMetadata(obj: Record<string, unknown>): ParsedCitemap {
     // metadata
     "@context", "@type", "@graph", "version", "citemapVersion",
     "$schema", "generatedBy", "lastVerified", "lastUpdated",
-    "citemapLevel", "citemap",
+    "citemapLevel", "citemap", "contentFiles",
     // identity + structural
     "brand", "entity", "contact", "verticals", "relationships",
     // v3.3 foundational sections (always-on per spec §3)
@@ -1296,7 +1302,9 @@ function extractMetadata(obj: Record<string, unknown>): ParsedCitemap {
   // sections so the detail page can surface their presence
   // independently from the modules list.
   out.hasTrust = isObject(obj.trust) || isObject(brand?.trust);
-  out.hasTemporalRecord = isObject(obj.temporalRecord) || isObject(brand?.temporalRecord);
+  // temporalRecord is an array (v3.5 §2.3); objects kept for old producers.
+  out.hasTemporalRecord = (Array.isArray(obj.temporalRecord) && obj.temporalRecord.length > 0)
+    || isObject(obj.temporalRecord) || isObject(brand?.temporalRecord);
   out.hasPolicy = isObject(obj.policy) && Object.keys(obj.policy as object).length > 0;
   out.hasVerification = isObject(obj.verification) && Object.keys(obj.verification as object).length > 0;
 
@@ -1315,6 +1323,10 @@ function extractMetadata(obj: Record<string, unknown>): ParsedCitemap {
   // weighted denominator.
   out.profileCompleteness = computeCompleteness(obj);
 
+  // v3.5 §9 level, computed from the (joined) record; the claim kept beside it.
+  out.citemapLevel = computeCitemapLevel(obj);
+  if (typeof obj.citemapLevel === "number") out.claimedLevel = obj.citemapLevel;
+
   // Compact entity-graph for the per-entry viz (decisions/registry-entity-graph-viz.md).
   out.graph = graphModelFromCitemap(obj);
 
@@ -1330,18 +1342,18 @@ function computeCompleteness(obj: Record<string, unknown>): number {
   const source = brand ?? (obj.entity as Record<string, unknown> | undefined);
   const checks: Array<[boolean, number]> = [
     [typeof source?.name === "string", 10],
-    [typeof source?.description === "string", 8],
+    [typeof source?.description === "string" || typeof source?.aiSummary === "string", 8],
     [Array.isArray(source?.sameAs) && (source.sameAs as unknown[]).length > 0, 8],
-    [isObject(source?.address), 8],
-    [typeof source?.telephone === "string", 5],
+    [isObject(source?.address) || (Array.isArray(source?.locations) && (source!.locations as unknown[]).some(l => isObject(l) && typeof l.address === "string")), 8],
+    [typeof source?.telephone === "string" || (Array.isArray(source?.locations) && (source!.locations as unknown[]).some(l => isObject(l) && typeof l.phone === "string")), 5],
     [Array.isArray(source?.services) && (source.services as unknown[]).length > 0, 8],
     [Array.isArray(source?.products) && (source.products as unknown[]).length > 0, 8],
     [isObject(obj.trust)            || isObject(source?.trust),            10],
-    [isObject(obj.temporalRecord)   || isObject(source?.temporalRecord),   10],
+    [(Array.isArray(obj.temporalRecord) && obj.temporalRecord.length > 0) || isObject(obj.temporalRecord) || isObject(source?.temporalRecord), 10],
     [isObject(obj.citationContract),                                       10],
     [(Array.isArray(obj.verticals) && (obj.verticals as unknown[]).length > 0)
       || (isObject(source?.taxonomy) && typeof (source!.taxonomy as Record<string, unknown>).primaryVertical === "string"), 5],
-    [typeof obj.lastUpdated === "string", 5],
+    [typeof obj.lastUpdated === "string" || typeof obj.lastVerified === "string", 5],
     [isObject(source?.team) || Array.isArray(source?.team),                5],
   ];
   const totalWeight = checks.reduce((s, [, w]) => s + w, 0);
