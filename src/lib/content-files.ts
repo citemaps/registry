@@ -19,7 +19,7 @@ const MAX_FILE_BYTES = 2_097_152; // 2 MB
 const PER_FILE_TIMEOUT_MS = 6_000;
 const BUDGET_MS = 10_000;
 const PARALLEL = 6;
-const MEDIA_BRAND_KEYS = ["publications", "video", "podcasts", "speaking"];
+const MEDIA_BRAND_KEYS = ["publications", "video", "podcasts", "speaking", "products"]; // products: 2026-11-23
 
 type Doc = Record<string, unknown>;
 type Row = Record<string, unknown>;
