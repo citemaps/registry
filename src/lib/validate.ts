@@ -17,6 +17,7 @@
 // response body to 1 MB to prevent memory blowups.
 // ============================================================
 
+import { followContentFiles } from "./content-files";
 import { createHash } from "crypto";
 import { hostOf, isPrivateHost } from "./canonicalize";
 import type { ParsedCitemap, SubmissionFormat } from "./types";
@@ -352,6 +353,12 @@ export async function validate(url: string): Promise<ValidationResult> {
  *  part of validate() after the fetch. Also used for content a producer
  *  submits directly when the site can't be reached (lib/pushed.ts). */
 export async function validateObject(citemapJson: Record<string, unknown>, format: SubmissionFormat): Promise<ValidationResult> {
+  // Content files (2026-11-22): Media may live in files listed in
+  // contentFiles[]. Join them so counts and the graph cover the whole
+  // record; a file that can't be read is skipped (lib/content-files.ts).
+  if (Array.isArray(citemapJson.contentFiles) && citemapJson.contentFiles.length) {
+    citemapJson = (await followContentFiles(citemapJson, USER_AGENT)).doc;
+  }
   // Validate the parsed payload shape.
   const shapeError = validateCitemapShape(citemapJson);
   if (shapeError) {
